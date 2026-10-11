@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+.git
+.env
+replication
+migrations
+scripts
+docs
+__tests__
+*.md
+compose.yaml

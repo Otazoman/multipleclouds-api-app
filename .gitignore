@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+# Secrets and environment-specific files (never commit; see README)
+.env
+replication/nodes.env
+*.pem
+*.key

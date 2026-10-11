@@ -1,0 +1,44 @@
+# Google Cloud Build: build the image, push it to Artifact Registry and
+# deploy it to Cloud Run (new revision; traffic moves when it is ready).
+#
+# Substitutions set on the trigger (infrastructure repository):
+#   _REGION         region of Artifact Registry and Cloud Run (e.g. asia-northeast1)
+#   _AR_REPOSITORY  Artifact Registry repository ID
+#   _SERVICE        Cloud Run service name
+#   _WORKER_POOL    private pool: projects/<project>/locations/<region>/workerPools/<name>
+#   _IMAGE_NAME     image name in the repository
+substitutions:
+  _IMAGE_NAME: multicloud-api
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
+      - .
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
+      - --region=${_REGION}
+      - --quiet
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
+
+options:
+  pool:
+    name: ${_WORKER_POOL}
+  # Required when the trigger runs as a user-specified service account.
+  logging: CLOUD_LOGGING_ONLY

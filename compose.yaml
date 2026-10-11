@@ -1,0 +1,71 @@
+# Local active/active environment: three PostgreSQL nodes standing in for
+# the clouds and one API per node. See docs/getting-started.md.
+# The passwords are for these throwaway local containers only.
+
+x-postgres: &postgres
+  image: postgres:18
+  command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
+  environment:
+    POSTGRES_DB: appdb
+    POSTGRES_USER: admin
+    POSTGRES_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-local-admin}
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U admin -d appdb"]
+    interval: 2s
+    retries: 30
+
+x-api: &api
+  build: .
+  environment: &api-env
+    PORT: "8080"
+    DB_PORT: "5432"
+    DB_NAME: appdb
+    DB_USER: app_api
+    DB_PASSWORD: ${LOCAL_API_PASSWORD:-local-api}
+    DB_SSLMODE: disable
+    GRAPHIQL_ENABLED: "true"
+
+services:
+  pg-aws: *postgres
+  pg-google: *postgres
+  pg-azure: *postgres
+
+  api-aws:
+    <<: *api
+    environment: { <<: *api-env, CLOUD_ID: aws, DB_HOST: pg-aws }
+    ports: ["8081:8080"]
+    depends_on: { pg-aws: { condition: service_healthy } }
+  api-google:
+    <<: *api
+    environment: { <<: *api-env, CLOUD_ID: google, DB_HOST: pg-google }
+    ports: ["8082:8080"]
+    depends_on: { pg-google: { condition: service_healthy } }
+  api-azure:
+    <<: *api
+    environment: { <<: *api-env, CLOUD_ID: azure, DB_HOST: pg-azure }
+    ports: ["8083:8080"]
+    depends_on: { pg-azure: { condition: service_healthy } }
+
+  # Runs the scripts in scripts/ against the local nodes:
+  #   docker compose run --rm tools scripts/migrate.sh
+  tools:
+    image: postgres:18
+    profiles: ["tools"]
+    working_dir: /work
+    volumes: ["./:/work:ro"]
+    entrypoint: ["bash"]
+    environment:
+      NODES_FILE: /work/replication/nodes.local.env
+      NODE_AWS_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-local-admin}
+      NODE_GOOGLE_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-local-admin}
+      NODE_AZURE_ADMIN_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-local-admin}
+      NODE_AWS_REPL_PASSWORD: ${LOCAL_REPL_PASSWORD:-local-repl}
+      NODE_GOOGLE_REPL_PASSWORD: ${LOCAL_REPL_PASSWORD:-local-repl}
+      NODE_AZURE_REPL_PASSWORD: ${LOCAL_REPL_PASSWORD:-local-repl}
+      NODE_AWS_API_PASSWORD: ${LOCAL_API_PASSWORD:-local-api}
+      NODE_GOOGLE_API_PASSWORD: ${LOCAL_API_PASSWORD:-local-api}
+      NODE_AZURE_API_PASSWORD: ${LOCAL_API_PASSWORD:-local-api}
+    depends_on:
+      pg-aws: { condition: service_healthy }
+      pg-google: { condition: service_healthy }
+      pg-azure: { condition: service_healthy }
