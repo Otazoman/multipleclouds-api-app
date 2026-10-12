@@ -1,0 +1,34 @@
+# Azure Pipelines: build the image, push it to ACR and update the Container
+# App (new revision). Runs on the Managed DevOps Pool set as the pipeline's
+# default pool (VNet-joined agents: the ACR is reachable only through its
+# private endpoint). The branches that start it are set on the pipeline by
+# the infrastructure repository.
+#
+# Variables set on the pipeline (infrastructure repository):
+#   AZURE_CLIENT_ID     client ID of the agents' user-assigned identity
+#                       (AcrPush on the ACR, Contributor on the Container App)
+#   ACR_NAME            registry name
+#   ACR_LOGIN_SERVER    registry login server (<name>.azurecr.io)
+#   RESOURCE_GROUP      resource group of the Container App
+#   CONTAINER_APP_NAME  Container App name
+trigger: none # set on the pipeline (CI trigger override)
+pr: none
+
+variables:
+  IMAGE_NAME: multicloud-api
+
+steps:
+  - checkout: self
+
+  - script: |
+      set -euo pipefail
+      : "${AZURE_CLIENT_ID:?}" "${ACR_NAME:?}" "${ACR_LOGIN_SERVER:?}" "${RESOURCE_GROUP:?}" "${CONTAINER_APP_NAME:?}"
+      IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:${BUILD_SOURCEVERSION:0:12}"
+      az login --identity --client-id "$AZURE_CLIENT_ID" --only-show-errors --output none
+      az acr login --name "$ACR_NAME" --only-show-errors
+      docker build -t "$IMAGE" .
+      docker push "$IMAGE"
+      az containerapp update --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+        --image "$IMAGE" --only-show-errors --output none
+      echo "Deployed $IMAGE"
+    displayName: Build, push and deploy

@@ -1,5 +1,5 @@
 # API container image, built by every cloud's CI/CD
-# (buildspec.yml / cloudbuild.yaml / acr-task.yaml).
+# (buildspec.yml / cloudbuild.yaml / azure-pipelines.yml).
 # NODE_IMAGE lets a build use a mirror of the same image
 # (e.g. public.ecr.aws/docker/library/node on AWS).
 ARG NODE_IMAGE=node:24-bookworm-slim
