@@ -1,9 +1,13 @@
 import { createServer, Server, ServerResponse } from "node:http";
 import { createYoga } from "graphql-yoga";
 import { Pool } from "pg";
-import { GraphQLContext, schema } from "./schema";
-import { ItemService } from "./items/service";
-import { createPgItemRepository } from "./items/repository";
+import { PrimaryWriter } from "./cluster";
+import { Loaders } from "./data/loaders";
+import { QueryRunner } from "./data/queries";
+import { createPgRepository } from "./data/repository";
+import { EntityService } from "./data/service";
+import { ModelDef } from "./models/types";
+import { buildSchema, GraphQLContext } from "./schema";
 
 /** Paths answered without GraphQL (load balancer / platform probes). */
 const LIVENESS_PATHS = new Set(["/", "/healthz"]);
@@ -18,21 +22,44 @@ const sendJson = (res: ServerResponse, status: number, body: object): void => {
 /**
  * Builds the HTTP server:
  * - `/` and `/healthz`: liveness (the process is up; no DB access)
- * - `/readyz`: readiness (the database answers)
+ * - `/readyz`: readiness (this cloud's database answers; the primary is not
+ *   checked, so that reads keep being served while it is down)
  * - `/graphql`: the API
+ *
+ * `pool` is this cloud's database (reads); writes go through `writer`.
+ * The GraphQL API is generated from `models` (models/*.yaml).
  */
 export const createAppServer = (
+  models: readonly ModelDef[],
   pool: Pool,
+  writer: PrimaryWriter,
   cloudId: string,
   graphiql: boolean,
 ): Server => {
-  const items = new ItemService(createPgItemRepository(pool), cloudId);
-  const context: GraphQLContext = { items, cloudId };
+  const services = new Map(
+    models.map((model) => [
+      model.name,
+      new EntityService(
+        model,
+        createPgRepository(model, pool),
+        (meta, fn) =>
+          writer.transaction(meta, (client) => fn(createPgRepository(model, client))),
+        cloudId,
+      ),
+    ]),
+  );
+  const queries = new QueryRunner(pool);
   const yoga = createYoga({
-    schema,
+    schema: buildSchema(models),
     graphqlEndpoint: GRAPHQL_PATH,
     graphiql,
-    context: () => context,
+    // Loaders batch per request, so each request gets new ones.
+    context: (): GraphQLContext => ({
+      services,
+      queries,
+      loaders: new Loaders(services),
+      cloudId,
+    }),
   });
 
   return createServer((req, res) => {

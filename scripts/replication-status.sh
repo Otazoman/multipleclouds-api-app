@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Shows the replication state of every node in NODES: subscriptions (received
-# changes) and replication slots (changes kept for other nodes).
+# Shows the replication state of every node in NODES: the node's view of the
+# primary (scripts/switchover.sh), subscriptions (received changes) and
+# replication slots (changes kept for other nodes).
 #
 # Usage: scripts/replication-status.sh
 
@@ -10,6 +11,8 @@ read -r -a nodes <<< "$NODES"
 for node in "${nodes[@]}"; do
   echo "== $node"
   psql_admin "$node" -P pager=off <<'SQL'
+\echo 'cluster state (scripts/switchover.sh)'
+SELECT node_name, primary_node, epoch, updated_at FROM ops.cluster_state;
 \echo 'subscriptions (enabled, last message received from the publisher)'
 SELECT s.subname, s.subenabled AS enabled, st.received_lsn, st.latest_end_time
   FROM pg_subscription s

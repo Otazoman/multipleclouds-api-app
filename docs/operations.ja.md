@@ -1,0 +1,273 @@
+# 運用
+
+[English](operations.md)
+
+デプロイ済み環境での作業手順です。スクリプトは [getting-started.ja.md](getting-started.ja.md) で説明した
+ホストから実行します（ノード設定は `replication/nodes.env`、パスワードはシェルで export）。
+どのスクリプトも、先にローカルの compose 環境で試せます
+（`docker compose run --rm tools scripts/<script>.sh`）。ローカルでは、環境変数は `-e` で渡し
+（例：`-e SEED_FROM=aws`）、データベースを意図的に止めている間は `--no-deps` を付けてください。
+付けないと `docker compose run` がそのデータベースを起動し直します。
+
+## スキーマ変更（マイグレーション）
+
+論理レプリケーションは DDL を複製しません。すべてのノードにすべてのマイグレーションを適用する必要があります。
+
+1. モデル定義からマイグレーションを生成します（`npm run generate`、[models.ja.md](models.ja.md)）。
+   生成されない変更の場合は、新しいファイル `migrations/NNNN_description.sql`（次の番号）を手で追加します。
+   どこかで適用済みの可能性があるマイグレーションは絶対に編集しないでください。
+2. 稼働中の API と互換性を保ちます。テーブルや、NULL 許可・既定値付きの列を先に追加し、
+   それを使う API は後からデプロイします。
+3. 全ノードに適用します：
+
+   ```bash
+   scripts/migrate.sh
+   ```
+
+4. テーブルを追加した場合は、API がそのテーブルに書き込む**前に**レプリケーションの対象に含めます：
+
+   ```bash
+   scripts/replication-setup.sh
+   scripts/replication-status.sh
+   ```
+
+5. API をデプロイします。
+
+順番が重要な理由：まだ存在しないテーブルや列への変更を受け取ると、そのノードでは適用に失敗し、
+マイグレーションが適用されるまでそのサブスクリプションが止まります。
+
+列の削除やリネーム：先にその列を使わない API をデプロイし、その後で全ノードにマイグレーションを適用します。
+
+## レプリケーションの監視
+
+```bash
+scripts/replication-status.sh
+```
+
+| 項目 | 正常 | 注意すべき状態 |
+| --- | --- | --- |
+| cluster state | 全ノードで `primary_node` と `epoch` が同じ | 世代番号が小さいノードがある：`scripts/switchover.sh <現在のプライマリ>` を実行 |
+| subscriptions | `enabled = t`、`latest_end_time` が最近 | `latest_end_time` が古い：パブリッシャーに接続できないか、適用ワーカーが失敗を繰り返している |
+| replication slots | `active = t`、`retained_wal` が小さい | `active = f` で `retained_wal` が増え続ける：サブスクライバーが停止しており、このノードに WAL が溜まっている |
+| apply errors | `0` | 件数が増えている：「適用エラー」を参照 |
+
+他のノードが停止している間、すべてのノードで `retained_wal` が増えます。長時間の障害中はデータベースのディスク使用量を監視してください。
+
+## 適用エラー
+
+受け取った変更を適用できない場合（テーブルや列がない、制約違反など）、サブスクリプションの適用ワーカーは
+停止・再起動して同じ変更を再試行します。そのノードでは、それ以降の変更も適用されません。
+
+1. サブスクライバー側データベースのログ（各クラウドのログサービス）でエラーを確認します。
+2. 原因を取り除きます。テーブルや列がない場合は、そのノードで `scripts/migrate.sh` を実行します。
+3. ワーカーは次の再試行で自動的に再開します。
+
+変更のスキップ（`ALTER SUBSCRIPTION ... SKIP`）は、そのノードでその変更を失い、データベース間に差異が残ります。
+データの修復方法を決めてから行ってください。
+
+## クラウド障害
+
+**セカンダリ（プライマリ以外）の障害**
+
+- そのクラウドの API は読み取りができなくなります（`/readyz` が失敗）。他のクラウドは読み書きを
+  継続します。書き込みの確認は、残ったセカンダリが行います。
+- 他のノードは障害ノード向けの WAL を保持し続けます（`retained_wal`）。ディスク使用量を監視してください。
+- ノードが復旧すると、サブスクリプションは自動で再接続し、遅れを取り戻します。その間に切り替えが
+  あった場合は、`scripts/switchover.sh <現在のプライマリ>` を実行して現在の状態を反映します。
+
+**プライマリの障害**
+
+- 書き込みは `PRIMARY_UNAVAILABLE` で失敗します（リクエストごとに最大 5 秒の接続タイムアウトの後）。
+  読み取りは他のクラウドで継続します。
+- 強制切り替え（後述）でプライマリを移します。`PRIMARY_REFRESH_INTERVAL_MS` 以内に書き込みが再開します。
+
+障害が長引き、保持している WAL で他のデータベースのディスクが逼迫しそうな場合は、障害ノードを
+レプリケーションから外し（後述）、後で戻します（「外したノードを戻す」を参照）。
+
+## 切り替え
+
+プライマリは書き込みを受け付けるノードです（[architecture.ja.md](architecture.ja.md#書き込み)）。
+`scripts/replication-status.sh` で、各ノードから見たプライマリ（cluster state）を確認できます。
+
+### 初回設定
+
+`replication-setup.sh` の後、すべてのノードに接続できる状態で実行します：
+
+```bash
+scripts/switchover.sh <node>
+```
+
+### 計画的な切り替え
+
+現在のプライマリが稼働している場合（メンテナンス、利用者に近いクラウドへの移動、リハーサルなど）：
+
+```bash
+scripts/switchover.sh <target>
+```
+
+まず旧プライマリが書き込みの受け付けを止め、次に切り替え先がすべてを確定するのを待ち
+（最大 `CATCHUP_TIMEOUT`、既定 60 秒）、その後で他のノードが新しい状態になります。書き込みが
+`PRIMARY_UNAVAILABLE` で失敗するのは 1 秒程度です。待ちがタイムアウトした場合は、どのノードも
+書き込みを受け付けない状態になります。スクリプトを再実行するか、旧プライマリが使えないなら `--force` を使います。
+
+### 強制切り替え
+
+現在のプライマリが停止している、または他のデータベースから切り離されていて計画的な切り替えが完了しない
+場合です。スクリプトを実行するホストから旧プライマリに接続できる場合は、スクリプトが先にその書き込みを
+止めます。接続できない場合は、本当に停止または切り離されていることを確認してから（どちらの場合も書き込みの
+確認はできませんが、そのクラウドの API からは接続できている可能性があります）、実行します：
+
+```bash
+scripts/switchover.sh --force <target>
+```
+
+- スクリプトは、接続できる各ノードが旧プライマリから受け取った量を表示します。切り替え先は最も多く
+  受け取ったノードでなければならず、そうでなければ停止します（他のノードだけが確認した書き込みが
+  欠けるため）。`--allow-behind` でこのチェックを無視できます。
+- 接続できる各ノードで、旧プライマリからのサブスクリプションを無効にします（旧プライマリの未確認の
+  書き込みが後から届いて、新しいデータを上書きしないように）。そのうえで新しい状態を設定します。
+- 「切り替え先より受け取った量が少ないノードがある」と警告された場合、そのノードには旧プライマリの
+  書き込みの一部が永久に欠けています（ノード間で変更は転送されません）。欠けている書き込みは
+  `scripts/journal-diff.sh <切り替え先> <遅れているノード>` で一覧にできます。そのノードを初期化してください
+  （「ノードの削除」→「外したノードを戻す」）。
+
+### 強制切り替えの後
+
+旧プライマリをそのまま戻してはいけません。確認されなかった書き込み（クライアントには
+`COMMIT_UNCONFIRMED` が返ったか、応答がなかったもの）を持っている可能性があります。復旧したら：
+
+1. 他のノードに届かなかった書き込みを、引数と結果つきで一覧にし、出力を保存します：
+
+   ```bash
+   SINCE='<障害より前の時刻>' scripts/journal-diff.sh <旧プライマリ> <現在のプライマリ>
+   ```
+
+   これらの書き込みについて、クライアントには `COMMIT_UNCONFIRMED`（または応答なし）が返っています。
+   同じ冪等キーで再送したものは、新しいプライマリで書き込み済みです。それ以外は内容を確認し、
+   必要なら API から再度送ります。
+2. 外して（「ノードの削除」）、戻します（「外したノードを戻す」）。これでデータが初期化されます。
+
+### 切り替え中に接続できなかったノード
+
+新しい状態を受け取るまでは古い状態のままです：
+
+```bash
+scripts/switchover.sh <現在のプライマリ>
+```
+
+その間も API は誤りません。見えている中で最も大きい世代番号を使うためです。
+
+## 変更履歴（ジャーナル）
+
+`app.write_journal` は書き込み1件につき1行ずつ増えます。古い行を定期的に削除してください
+（例：スクリプト用ホストで毎日実行するジョブ）：
+
+```bash
+DAYS=30 scripts/journal-prune.sh
+```
+
+削除はプライマリでのみ実行されます（削除は他ノードに複製されます）。`DAYS` は冪等キーの有効期間でもあります。
+クライアントが再送する可能性のある期間より長くしてください。
+
+## ノードの追加
+
+1. `replication/nodes.env` の `NODES` にノードを追加し、`NODE_<N>_*` を設定します。
+2. 新しいノードにマイグレーションを適用し、API ロールを作成します：
+
+   ```bash
+   scripts/migrate.sh <new>
+   scripts/api-role-setup.sh <new>
+   ```
+
+3. **全ノードで書き込みを止めます**（API サービスを停止）。止めないと、コピー中に書き込まれた行が新しいノードに入らないことがあります。
+4. 既存ノードの1つから既存の行をコピーしつつ、サブスクリプションを作成します：
+
+   ```bash
+   SEED_FROM=<existing> scripts/replication-setup.sh
+   scripts/replication-status.sh
+   ```
+
+5. 新しいノードに現在のプライマリを設定します：
+
+   ```bash
+   scripts/switchover.sh <現在のプライマリ>
+   ```
+
+6. 新しいノードにデータが入るのを待ってから（初期コピーはバックグラウンドで実行されます）、新しいノードを含めて API を再開します。
+7. クラスタにとって新しいノード（戻したノードではない）の場合は、他のすべての API の `PEER_NODES` と
+   `DB_<NODE>_*` にそのノードを追加し、そのノードの API も他のノードを `PEER_NODES` に入れてデプロイします。
+
+## ノードの削除
+
+専用のスクリプトはありません。プライマリは削除しないでください（先に切り替えます）。
+
+1. 削除するノードに接続できる場合は、先にそのノード自身のサブスクリプションを削除します
+   （他ノード上の対応するスロットも削除されます）：
+
+   ```sql
+   DROP SUBSCRIPTION mc_sub_<other>_to_<removed>;   -- 他の各ノードについて
+   ```
+
+2. **残る各ノード**で、管理者ユーザーとして実行します：
+
+   ```sql
+   -- 削除するノードからの受信を止める。
+   -- 削除するノードに接続できない場合は、先にスロットを切り離す：
+   ALTER SUBSCRIPTION mc_sub_<removed>_to_<this> DISABLE;
+   ALTER SUBSCRIPTION mc_sub_<removed>_to_<this> SET (slot_name = NONE);
+   DROP SUBSCRIPTION mc_sub_<removed>_to_<this>;
+
+   -- 削除するノード向けの WAL の保持をやめる（手順 1 で削除済みなら不要）。
+   -- 切り離されたノードは wal_sender_timeout（1 分）の間スロットを使用中のまま
+   -- にしていることがあるので、先にその接続を終了する。
+   SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
+    WHERE slot_name = 'mc_sub_<this>_to_<removed>' AND active;
+   SELECT pg_drop_replication_slot('mc_sub_<this>_to_<removed>');
+   ```
+
+3. `NODES` からノードを外します。
+
+## 外したノードを戻す
+
+外したノードのデータは古く、古いサブスクリプションも残っています。初期化してから、新しいノードとして追加します。
+
+1. 外したノードで、管理者ユーザーとして実行します（他ノード側の古いスロットは削除済みなので、切り離してから削除します）：
+
+   ```sql
+   SELECT format('ALTER SUBSCRIPTION %I DISABLE', subname)
+     FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
+   SELECT format('ALTER SUBSCRIPTION %I SET (slot_name = NONE)', subname)
+     FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
+   SELECT format('DROP SUBSCRIPTION %I', subname)
+     FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
+   SELECT pg_drop_replication_slot(slot_name)
+     FROM pg_replication_slots WHERE slot_name LIKE 'mc\_sub\_%';
+   -- パブリケーションは TRUNCATE を公開しないが、パブリケーションも削除して
+   -- このノードから他ノードに何も届かないようにする（replication-setup.sh が作り直す）
+   DROP PUBLICATION IF EXISTS mc_pub;
+   TRUNCATE app.items, app.write_journal;   -- スキーマ "app" のすべてのテーブル
+   ```
+
+   このノードで書き込まれ、他ノードに届いていなかった行はこの手順で失われます。必要なら先にエクスポートしてください。
+
+2. 「ノードの追加」の手順 1 から実施します。
+
+## パスワード
+
+- **API ロール：** すべての API がすべてのノードに接続する（書き込みはプライマリへ送る）ため、
+  あるノードの API 用パスワードは全クラウドで使われます。新しいパスワードを `NODE_<N>_API_PASSWORD` に
+  設定して `scripts/api-role-setup.sh <node>` を実行し、シークレットストアの `DB_PASSWORD`（そのクラウド）と
+  `DB_<NODE>_PASSWORD`（他のクラウド）を更新してから、すべての API を再起動します。再起動までは既存の接続がそのまま使えます。
+- **レプリケーションロール：** `NODE_<N>_REPL_PASSWORD` を変更して `scripts/replication-setup.sh` を
+  実行します。ロールのパスワードを更新し、それを使うサブスクリプションの接続文字列も更新します。
+  この2つの間は該当するサブスクリプションが再接続できないため、他に確認できるノードがなければ
+  書き込みが `COMMIT_UNCONFIRMED` になることがあります。
+
+## ローカル環境のリセット
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
+その後、データベースのセットアップを再度行います（README の「ローカルテスト」）。
