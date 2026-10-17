@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "GraphQL CRUD API deployed active/active to AWS, Google Cloud and Azure",
-  "license": "MPL-2.0",
+  "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

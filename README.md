@@ -271,8 +271,12 @@ Keys are kept as long as the write journal keeps the write
 | ---------- | -------------------------------------------- |
 | `/`, `/healthz` | Liveness (no database access)           |
 | `/readyz`  | Readiness: this cloud's database answers and has every migration in the image (`503` until `scripts/migrate.sh` has run there); the primary is not checked |
+| `/graphql` | GraphQL API                                  |
 
 Every health endpoint returns `{"status", "cloud", "version"}`; `version`
 is the commit the image was built from, to check that every cloud runs the
 same release.
-| `/graphql` | GraphQL API                                  |
+
+## License
+
+[MIT](LICENSE)

@@ -29,7 +29,7 @@
 | キュー（SQS 等） | トランザクションデータには使わない。後続処理（通知など）に限る |
 | ブランチと環境 | `dev` → dev 環境、`staging` → stg 環境、`prod` → prod 環境。`main` は prod にリリースしたコードの記録で、デプロイは起動しない（2026-10-12） |
 | 昇格の方法 | すべて PR。`staging`・`prod`・`main` はマージコミットのみ（2026-10-17。当初は fast-forward のみだったが、GitHub の PR は fast-forward でマージできないため、全ブランチ PR 必須を優先した）。環境には同じ内容が入るが、コミット ID と `/healthz` の版は環境ごとに異なる |
-| リポジトリの公開 | アプリのリポジトリは公開（2026-10-17。無料プランの非公開リポジトリではブランチ保護が使えないため）。公開前に全履歴の作成者のメールを GitHub の noreply に書き換えた。cdktn のリポジトリは非公開のまま |
+| リポジトリの公開 | アプリのリポジトリは公開（2026-10-17。無料プランの非公開リポジトリではブランチ保護が使えないため）。公開前に全履歴の作成者のメールを GitHub の noreply に書き換えた。cdktn のリポジトリも公開（以前から）。2026-10-17 に履歴の作成者のメールを noreply に書き換え、流出していた秘密鍵と PFX を履歴から削除し、証明書を再発行した（cdktn の vpn_refactor_plan.md SEC-01） |
 | シークレット（API-08） | 案 A'（2026-10-17）: 3 ノードで同じ `app_api` パスワードを使う。値は作業用 VM から CLI で各クラウドのシークレットストアに入れる。cdktn は入れ物とダミー値だけ（FEAT-01 §7 のまま）。Azure Key Vault は非公開のまま（§5） |
 | 接続数（API-06） | アプリ側の対策（プールの縮小と他ノード用プールの分離）。マネージドの接続プーリングは使わない（2026-10-17、§6.2） |
 | API の構成（topology） | 2026-10-17 決定: cdktn の `apiContainerConfig.topology` で選ぶ。`cluster`（DB のあるクラウドで1つのクラスタ。2クラウド以上なら VPN とプライベート DNS が必須で、無ければ合成エラー）、`independent`（各クラウドが自分の DB だけで単体で動く。VPN・DNS 不要）。dev は当面 `independent` で単体クラウドとして試し、最終的に VPN・DNS を有効にして `cluster` でテストする。単体から後でクラスタにすると、データが残るのは1つのクラウドだけ |
@@ -146,7 +146,7 @@ cdktn でインフラを作成した後、**作業用 VM 上でスクリプト�
 |---|---|
 | ブランチ | `dev`・`staging`・`prod` を作成（起点は当時の `origin/main`）。既定のブランチは `dev` |
 | ルールセット | 「dev: pull requests only」: `dev` は PR 必須（承認 0 件）、強制 push と削除を禁止。「staging/prod/main: pull requests only」: 同じルールに加えて、マージ方法はマージコミットのみ |
-| cdktn のトリガー | `config/cicd.ts` の `cicdTrigger.branches` = dev `dev`、stg `staging`、prod `prod`（cdktn `0680628`）。dev 環境は destroy 済みのため、次の構築時に反映される |
+| cdktn のトリガー | `config/cicd.ts` の `cicdTrigger.branches` = dev `dev`、stg `staging`、prod `prod`（cdktn `d328234`）。dev 環境は destroy 済みのため、次の構築時に反映される |
 | メール | 公開前に全履歴の作成者とコミッターを `3047545+Otazoman@users.noreply.github.com` に書き換え（内容は同一）。このリポジトリの git の `user.email` も noreply。他の clone は取り直しが必要 |
 
 流れ: `feature/*` --PR--> `dev` --PR--> `staging` --PR--> `prod` --PR--> `main`。各環境では、ブランチを進める前にその環境の DB を更新する（`migrate.sh`、必要なら `replication-setup.sh`・`api-role-setup.sh`）。戻すときは環境のブランチで revert（DB の変更は戻さない）。hotfix は `prod` から作り、`prod` → `staging` → `dev` に戻す。
@@ -160,7 +160,7 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 対象 | 状態 |
 |---|---|
 | アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`836f4c3`）に push 済み。API-07・API-18 を含め push 済み（2026-10-17）。API-19 のアプリ側も push 済み。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
-| cdktn のリポジトリ | 非公開。`main`（`95c781c`、API-02 とテストの修正を含む）。API-07 のジョブ、Aurora への変更、RDS の無効化も push 済み（2026-10-17）。API-19（topology）も push 済み（`37a5ac6`）。jest は 197 件すべて成功 |
+| cdktn のリポジトリ | **公開**。2026-10-17 に履歴を書き換えて強制 push（作成者のメールを noreply に、秘密鍵と PFX を履歴から削除。全コミットの ID が変わった。例: API-02 `95c781c` → `98ebfc3`、API-19 `37a5ac6` → `f98c424`）。`main` は `b1f0bd9` 以降。このリポジトリの git の `user.email` は noreply。他の clone は取り直しが必要。jest は 197 件すべて成功。証明書（Google 用の `server.crt`/`server.key`、Azure 用の PFX）は再発行済みで、次の deploy で反映される |
 | クラウド | **全環境とも未構築**（dev は 2026-10-12 に destroy、state のリソース数 0）。次の dev の deploy では VM・DB・コンテナ・CI/CD が作られる（課金あり） |
 | ローカルの compose 環境 | 3 ノードで起動中（プライマリは aws、検証用のデータあり）。不要なら `docker compose down -v` |
 | その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい） |
