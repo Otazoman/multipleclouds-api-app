@@ -51,13 +51,28 @@ shared machine; export them in the shell instead, reading them from the
 secret store just before running the scripts:
 
 ```bash
-export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...   NODE_AWS_API_PASSWORD=...
-export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=... NODE_GOOGLE_API_PASSWORD=...
-export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...  NODE_AZURE_API_PASSWORD=...
+export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...
+export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=...
+export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
+# One API password for every node
+export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
 ```
 
-The API and replication passwords are chosen by you. Store them in each
-cloud's secret store: the API containers read `DB_PASSWORD` from there.
+The API and replication passwords are chosen by you:
+
+- **API (`app_api`): one password for every node.** Every API connects to
+  every node (writes go to the primary, which can be any of them), so each
+  cloud's containers hold every node's password anyway; one value keeps the
+  secret stores simple. Store it in **every** cloud's secret
+  `db-api-password`: the containers read `DB_PASSWORD` and every
+  `DB_<NODE>_PASSWORD` from their own cloud's copy.
+- **Replication (`app_repl`): one per node**, in that cloud's secret
+  `db-repl-password`. Only the scripts use them.
+
+The secrets are created empty (dummy value) by the infrastructure
+repository; set their values from the VMs with each cloud's CLI as its
+documentation describes (Azure Key Vault is reachable only from the Azure
+VNet).
 
 ## 3. Set up the databases
 
@@ -79,8 +94,10 @@ VPN, the firewall / security group / NSG rules for port 5432 and the
 
 ## 4. Configure the API containers
 
-Each cloud's container must have these environment variables (set by the
-infrastructure repository; see [.env.sample](../.env.sample)):
+Each cloud's container must have these environment variables. The
+infrastructure repository sets them on the service its CI/CD deploys to
+(`config/apicontainer.ts` there), for the clouds whose database is enabled;
+see also [.env.sample](../.env.sample):
 
 | Variable | Value |
 | --- | --- |
@@ -90,11 +107,22 @@ infrastructure repository; see [.env.sample](../.env.sample)):
 | `DB_SSLMODE` | `require`, or `verify-full` with `DB_SSL_CA_FILE` |
 | `GRAPHIQL_ENABLED` | `false` |
 | `PEER_NODES` | The other nodes, e.g. `google,azure` on AWS |
-| `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | For each node in `PEER_NODES`: its database address reachable from this cloud, and its `app_api` password |
+| `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | For each node in `PEER_NODES`: its database address reachable from this cloud (private DNS name), and the `app_api` password (the same secret as `DB_PASSWORD`) |
 | `WRITE_ACK_PEERS` | `1` (default) |
 
 The other `DB_<NODE>_*` settings default to this cloud's values; set them
 only where a node differs (e.g. `DB_<NODE>_SSLMODE`).
+
+Two settings of the infrastructure repository depend on the order of the
+first deployment:
+
+- `azureSecretReady`: an Azure Container App cannot start while the Key
+  Vault secret it references does not exist. Deploy the infrastructure
+  with `false`, set the secret from the Azure VM, then deploy with `true`.
+- `readinessProbe`: the placeholder images answer only `/`. After the API
+  has been deployed (step 5), set it to `true` and deploy the
+  infrastructure: the load balancers and platforms then use `/readyz`
+  (readiness, including the migrations) and `/healthz` (liveness).
 
 ## 5. Deploy
 

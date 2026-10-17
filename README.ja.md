@@ -188,6 +188,9 @@ docker compose up -d --build   # API コンテナを再ビルドして再起動
 新しいテーブルをパブリケーションに追加する必要があるためです。その後、API を再ビルドします
 （`docker compose up -d --build`）。API はモデルを起動時に読み込みます。
 
+変更をリリースする（feature ブランチ → `dev` → `staging` → `prod` → `main`）手順は
+[リリース](docs/operations.ja.md#リリース) を参照してください。
+
 ### 6. ログと後片付け
 
 ```bash

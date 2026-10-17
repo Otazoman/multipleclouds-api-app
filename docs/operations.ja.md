@@ -42,48 +42,165 @@
 
 ## リリース
 
-環境ごとに、このリポジトリのそれぞれのブランチからデプロイします（トリガーはインフラのリポジトリが設定します）：
+コードは、ローカルの feature ブランチから各環境へ、プルリクエストで進めます。環境ごとに、それぞれのブランチから
+デプロイします（トリガーはインフラのリポジトリが設定します）：
 
-| ブランチ | デプロイ先 |
-| --- | --- |
-| `dev` | dev 環境（開発の統合先。feature ブランチをプルリクエストでマージする） |
-| `staging` | stg 環境 |
-| `prod` | prod 環境 |
-| `main` | なし。prod にリリースしたコードの保管（必要ならタグ `vX.Y.Z`） |
-
-どのブランチも、プルリクエストでしか変更できません（GitHub のブランチのルール）。昇格は前のブランチからの
-プルリクエストで、マージコミットでマージします（`staging`・`prod`・`main` で許可しているのはこの方法だけです。
-squash や rebase ではブランチの履歴がずれます）。各環境には、前の環境で確認したものと同じコードが入ります：
+| ブランチ | デプロイ先 | 更新の方法 |
+| --- | --- | --- |
+| `feature/*`、`hotfix/*` | なし | 自分で push |
+| `dev` | dev 環境 | `feature/*` からのプルリクエスト |
+| `staging` | stg 環境 | `dev` からのプルリクエスト |
+| `prod` | prod 環境 | `staging`（または `hotfix/*`）からのプルリクエスト |
+| `main` | なし。prod にリリースしたコード | `prod` からのプルリクエスト |
 
 ```
 feature/* --PR--> dev --PR--> staging --PR--> prod --PR--> main
+（ローカル）      dev 環境     stg 環境        prod 環境    （記録）
 ```
 
-マージコミットはブランチごとに違うため、`/healthz` の `version` は環境ごとに違います。同じ環境の中では、
-すべてのクラウドで同じでなければなりません。
+GitHub のブランチのルールで、`dev`・`staging`・`prod`・`main` はプルリクエストが必須で、強制 push と削除は
+拒否されます。`staging`・`prod`・`main` で使えるマージ方法は **Create a merge commit** だけです。squash や
+rebase ではブランチの履歴が別々になり、次の昇格で衝突します。マージコミットはブランチごとに違うため、
+`/healthz` の `version` は環境ごとに違います。同じ環境の中では、すべてのクラウドで同じでなければなりません。
 
-各環境で、ブランチを進める前に：
+例では GitHub CLI（`gh`）を使います。github.com の画面でも同じことができます。
 
-1. その環境のデータベースを更新します（その環境のスクリプト用ホストから）：`scripts/migrate.sh`。
-   テーブルを追加した場合は `scripts/replication-setup.sh`、API 用の関数を追加した場合は
-   `scripts/api-role-setup.sh` も実行します。API は起動時にモデルから SQL を組み立てるため、
-   新しいテーブルや列を使う版はこの前には動きません。その版の `/readyz` は `503` のままで、
-   コンテナ基盤は古い版でサービスを続けます。
-2. ブランチを進めます（プルリクエストをマージ）。各クラウドがビルド（テストを実行）してデプロイします。
-3. すべてのクラウドで確認します：`/readyz`、`/healthz` の `version` が同じであること、プライマリ以外の
-   クラウドの API からの書き込み。
-4. 一部のクラウドだけ失敗した場合は、そのクラウドのビルドを再実行します。マイグレーションは追加のみなので、
-   新旧の版が混在しても動きます。
-5. prod の確認が済んだら、`prod` から `main` へのプルリクエストをマージします。
+### 1. ローカルで開発する
 
-列やテーブルの削除は、それを使わない版をすべての環境に出した**次の**リリースで、手書きのマイグレーションとして
-行います（[models.ja.md](models.ja.md)）。
+```bash
+git switch dev && git pull
+git switch -c feature/<name>
+# ... コード / models/*.yaml / migrations を変更 ...
+npm run generate               # models/*.yaml を変更したとき（docs/models.ja.md）
+npm run typecheck && npm test
+```
 
-**戻すとき**：環境のブランチで revert します。前の版が再デプロイされます。データベースの変更はそのまま
-残します（追加のみのため）。
+続けて、ローカルの compose 環境で変更を確認します（README の「ローカルテスト」）。API を再ビルドし、
+新しいマイグレーションを適用し、変更に必要なスクリプトを実行します：
 
-**緊急の修正**：`prod` から `hotfix/*` を作り、プルリクエストで `prod` にマージします（確認が必要なら先に
-`staging` を経由）。その後、プルリクエストで `prod` を `staging` に、`staging` を `dev` にマージし、次の昇格で修正が失われないようにします。
+```bash
+docker compose up -d --build
+docker compose run --rm tools scripts/migrate.sh
+docker compose run --rm tools scripts/replication-setup.sh   # テーブルを追加したとき
+docker compose run --rm tools scripts/api-role-setup.sh      # API 用の関数を追加したとき
+curl localhost:8081/readyz                                   # すべての API（8081〜8083）で 200
+```
+
+書き込み、SQL、マイグレーション、スクリプトの変更では、プライマリ以外の API からの書き込みも確認します。
+書き込みの経路を変えた場合は切り替えも試します（README）。
+
+push して、`dev` へのプルリクエストを作ります：
+
+```bash
+git push -u origin feature/<name>
+gh pr create --base dev --title "<変更内容>" --body "<理由、マイグレーション、実行するスクリプト>"
+```
+
+プルリクエストには、リリースに必要なデータベースの作業（新しいマイグレーション、`replication-setup.sh`、
+`api-role-setup.sh`）を書きます。どの環境でも、ブランチを進める前に行う必要があります。
+
+### 2. 環境にリリースする（dev、stg、prod）
+
+どの環境でも同じ手順を、dev（feature のプルリクエストをマージ）→ stg（`dev` → `staging`）→ prod
+（`staging` → `prod`）の順に行います。
+
+1. **先にその環境のデータベースを更新します。** リリースにマイグレーションが含まれる場合、その環境の
+   スクリプト用ホスト（[getting-started.ja.md](getting-started.ja.md)）から実行します：
+
+   ```bash
+   git fetch && git switch --detach origin/<リリースするブランチ>   # 例：stg のリリースの前なら origin/dev
+   scripts/migrate.sh
+   scripts/replication-setup.sh && scripts/replication-status.sh   # テーブルを追加したとき
+   scripts/api-role-setup.sh                                       # API 用の関数を追加したとき
+   ```
+
+   API は起動時にモデルから SQL を組み立てるため、新しいテーブルや列を使う版はこの前には動きません。
+   忘れた場合、新しい版の `/readyz` は `503` のままで、コンテナ基盤は古い版でサービスを続けます。
+   マイグレーションは追加のみなので、稼働中の版はこの手順の後も動きます。
+
+2. **その環境のプルリクエストをマージします：**
+
+   ```bash
+   # dev：feature のプルリクエストをマージ
+   gh pr merge <番号> --merge --delete-branch
+   # stg / prod：昇格のプルリクエストを作ってマージ
+   gh pr create --base staging --head dev --title "Release to stg" --body ""
+   gh pr create --base prod --head staging --title "Release to prod" --body ""
+   gh pr merge <番号> --merge
+   ```
+
+   各クラウドがイメージをビルドし（ビルドでテストを実行し、失敗すれば止まる）、デプロイします：
+   AWS CodeBuild → ECS、Cloud Build → Cloud Run、Azure Pipelines → Container Apps。
+
+3. **その環境のすべてのクラウドで確認します：**
+
+   ```bash
+   curl https://<endpoint>/healthz   # 3 クラウドで同じ "version"
+   curl https://<endpoint>/readyz    # 200
+   ```
+
+   プライマリ以外のクラウドの API からの書き込みも確認します（README の「API を確認する」）。
+
+4. 一部のクラウドだけ失敗した場合は、原因を直してそのクラウドのビルドを再実行します（CodeBuild、
+   Cloud Build のトリガー、Azure Pipelines）。マイグレーションが追加のみの間は、新旧の版が混在しても動きます。
+
+5. 次の環境に進む前に、この環境で変更を十分に確認します（機能、性能、ログ）。
+
+### 3. リリースを `main` に記録する
+
+prod の確認が済んだら：
+
+```bash
+gh pr create --base main --head prod --title "Released to prod" --body ""
+gh pr merge <番号> --merge
+git fetch && git tag vX.Y.Z origin/main && git push origin vX.Y.Z   # 任意
+```
+
+`main` はビルドを起動しません。prod に入っているものを示します。
+
+### 列やテーブルの削除
+
+削除は、その列やテーブルを使わない版をすべての環境に出した**次の**リリースで、手書きのマイグレーションとして
+行います（[models.ja.md](models.ja.md)）。そうしないと、マイグレーションを適用した時点で稼働中の版が失敗します。
+
+### 戻すとき
+
+環境のブランチで、プルリクエストで revert します。前の版が再デプロイされます：
+
+```bash
+git switch -c revert/<name> origin/<ブランチ>
+git revert -m 1 <マージコミット>     # そのリリースのマージコミット
+git push -u origin revert/<name>
+gh pr create --base <ブランチ> --title "Revert <リリース>" --body ""
+```
+
+データベースの変更はそのまま残します（追加のみで、前の版は無視します）。前のブランチ（例：`dev`）には
+変更が残っているので、そこで直して通常どおり昇格します。revert はその環境のブランチに残るため、後で同じ変更を
+もう一度リリースするときは、`dev` で revert を revert して昇格します。
+
+### 緊急の修正（hotfix）
+
+```
+prod --> hotfix/* --PR--> prod --PR--> main
+                            \--PR--> staging --PR--> dev
+```
+
+```bash
+git switch -c hotfix/<name> origin/prod
+# ... 修正、npm run typecheck && npm test、ローカルで確認 ...
+git push -u origin hotfix/<name>
+gh pr create --base prod --title "Hotfix: <内容>" --body ""
+```
+
+先に stg で確認する場合は、`prod` の前に `staging` にマージします。データベースの作業はリリースと同じです
+（手順 2 の 1）。リリースの後、次の昇格で修正が消えないよう、修正を戻します：
+
+```bash
+gh pr create --base staging --head prod --title "Back-merge hotfix" --body ""
+gh pr create --base dev --head staging --title "Back-merge hotfix" --body ""
+```
+
+これらもマージコミットでマージし、prod を `main` に記録します（3）。
 
 ## レプリケーションの監視
 
@@ -301,10 +418,12 @@ DAYS=30 scripts/journal-prune.sh
 
 ## パスワード
 
-- **API ロール：** すべての API がすべてのノードに接続する（書き込みはプライマリへ送る）ため、
-  あるノードの API 用パスワードは全クラウドで使われます。新しいパスワードを `NODE_<N>_API_PASSWORD` に
-  設定して `scripts/api-role-setup.sh <node>` を実行し、シークレットストアの `DB_PASSWORD`（そのクラウド）と
-  `DB_<NODE>_PASSWORD`（他のクラウド）を更新してから、すべての API を再起動します。再起動までは既存の接続がそのまま使えます。
+- **API ロール：** 全ノードの `app_api` は同じパスワードで、すべてのクラウドのシークレット `db-api-password` に
+  あります（[getting-started.ja.md](getting-started.ja.md)）。新しいパスワードをすべての `NODE_<N>_API_PASSWORD` に
+  設定して `scripts/api-role-setup.sh` を実行し、すべてのクラウドのシークレットストアの `db-api-password` を
+  更新してから、すべての API を再起動します（新しいデプロイ。コンテナ基盤はコンテナの起動時にシークレットを
+  読みます）。再起動までは既存の接続は使えますが、新しい接続は失敗します。利用の少ない時間に、手順の間を
+  空けずに行ってください。
 - **レプリケーションロール：** `NODE_<N>_REPL_PASSWORD` を変更して `scripts/replication-setup.sh` を
   実行します。ロールのパスワードを更新し、それを使うサブスクリプションの接続文字列も更新します。
   この2つの間は該当するサブスクリプションが再接続できないため、他に確認できるノードがなければ

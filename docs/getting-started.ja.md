@@ -46,13 +46,25 @@ cp replication/nodes.env.sample replication/nodes.env
 スクリプトを実行する直前にシークレットストアから読み出してシェルで export します：
 
 ```bash
-export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...   NODE_AWS_API_PASSWORD=...
-export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=... NODE_GOOGLE_API_PASSWORD=...
-export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...  NODE_AZURE_API_PASSWORD=...
+export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...
+export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=...
+export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
+# API のパスワードは全ノード共通
+export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
 ```
 
-API 用とレプリケーション用のパスワードは自分で決めます。API のコンテナは `DB_PASSWORD` を
-シークレットストアから読むので、各クラウドのシークレットストアに登録してください。
+API 用とレプリケーション用のパスワードは自分で決めます：
+
+- **API（`app_api`）：全ノードで1つのパスワード。** すべての API がすべてのノードに接続する（書き込みは
+  どのノードにもなり得るプライマリへ送る）ため、各クラウドのコンテナはいずれにしても全ノードのパスワードを
+  持ちます。1つの値にするとシークレットストアの管理が簡単になります。**すべての**クラウドのシークレット
+  `db-api-password` に登録します。コンテナは、自クラウドのものから `DB_PASSWORD` とすべての
+  `DB_<NODE>_PASSWORD` を読みます。
+- **レプリケーション（`app_repl`）：ノードごと**に、そのクラウドのシークレット `db-repl-password` に
+  登録します。使うのはスクリプトだけです。
+
+シークレットはインフラのリポジトリが空（ダミーの値）で作ります。値は、そのドキュメントのとおり各クラウドの
+VM から CLI で設定します（Azure Key Vault には Azure の VNet からしか接続できません）。
 
 ## 3. データベースのセットアップ
 
@@ -72,7 +84,8 @@ scripts/replication-status.sh  # 確認
 
 ## 4. API コンテナの設定
 
-各クラウドのコンテナには次の環境変数が必要です（インフラのリポジトリで設定します。
+各クラウドのコンテナには次の環境変数が必要です。インフラのリポジトリが、CI/CD のデプロイ先のサービスに、
+データベースが有効なクラウドの分を設定します（そのリポジトリの `config/apicontainer.ts`。
 [.env.sample](../.env.sample) も参照）：
 
 | 変数 | 値 |
@@ -83,11 +96,19 @@ scripts/replication-status.sh  # 確認
 | `DB_SSLMODE` | `require`。または `verify-full` と `DB_SSL_CA_FILE` |
 | `GRAPHIQL_ENABLED` | `false` |
 | `PEER_NODES` | 他のノード。AWS なら `google,azure` |
-| `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | `PEER_NODES` の各ノードについて、このクラウドから接続できるデータベースのアドレスと、その `app_api` のパスワード |
+| `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | `PEER_NODES` の各ノードについて、このクラウドから接続できるデータベースのアドレス（プライベート DNS 名）と、`app_api` のパスワード（`DB_PASSWORD` と同じシークレット） |
 | `WRITE_ACK_PEERS` | `1`（既定） |
 
 その他の `DB_<NODE>_*` は、省略するとこのクラウドの値と同じになります。異なるノードだけ
 設定してください（例：`DB_<NODE>_SSLMODE`）。
+
+インフラのリポジトリの次の2つの設定は、初回のデプロイの順番に関係します：
+
+- `azureSecretReady`：Azure の Container App は、参照する Key Vault のシークレットがないと起動できません。
+  `false` でインフラを deploy し、Azure の VM からシークレットを設定してから、`true` で deploy します。
+- `readinessProbe`：仮のイメージは `/` にしか応答しません。API をデプロイした後（手順 5）に `true` にして
+  インフラを deploy すると、ロードバランサーとコンテナ基盤が `/readyz`（マイグレーションを含む readiness）と
+  `/healthz`（liveness）を使います。
 
 ## 5. デプロイ
 

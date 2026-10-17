@@ -50,56 +50,185 @@ then apply the migration to every node.
 
 ## Releases
 
-Each environment deploys its own branch of this repository (the triggers
-are set by the infrastructure repository):
+Code moves from a local feature branch through the environments by pull
+request. Each environment deploys its own branch (the triggers are set by
+the infrastructure repository):
 
-| Branch | Deploys to |
-| --- | --- |
-| `dev` | dev environment (development; feature branches are merged here by pull request) |
-| `staging` | stg environment |
-| `prod` | prod environment |
-| `main` | nothing: keeps the code released to prod (tag `vX.Y.Z` if needed) |
-
-Every branch changes only through pull requests (branch rules on GitHub).
-A promotion is a pull request from the previous branch, merged with a merge
-commit (the only method allowed on `staging`, `prod` and `main`; squash or
-rebase would make the branches diverge), so each environment gets the code
-that was tested before it:
+| Branch | Deploys to | Updated by |
+| --- | --- | --- |
+| `feature/*`, `hotfix/*` | nothing | you (push) |
+| `dev` | dev environment | pull request from `feature/*` |
+| `staging` | stg environment | pull request from `dev` |
+| `prod` | prod environment | pull request from `staging` (or `hotfix/*`) |
+| `main` | nothing: the code released to prod | pull request from `prod` |
 
 ```
 feature/* --PR--> dev --PR--> staging --PR--> prod --PR--> main
+ (local)          dev env     stg env         prod env    (record)
 ```
 
-The merge commits differ per branch, so the `version` on `/healthz` differs
-between environments; within an environment, every cloud must show the same.
+GitHub's branch rules require a pull request for `dev`, `staging`, `prod`
+and `main`, and refuse force pushes and deletions. On `staging`, `prod` and
+`main` the only merge method is **Create a merge commit**: squash or rebase
+would give the branches different histories, and the next promotion would
+conflict. The merge commits differ per branch, so the `version` on
+`/healthz` differs between environments; within an environment, every
+cloud must show the same.
 
-For each environment, before moving its branch:
+The examples use the GitHub CLI (`gh`); the same can be done on github.com.
 
-1. Update its databases (from that environment's script host):
-   `scripts/migrate.sh`; then `scripts/replication-setup.sh` if a table was
-   added, and `scripts/api-role-setup.sh` if a function for the API was
-   added. The API builds its SQL from the models at startup, so a version
-   that uses new tables or columns does not work before this; its
-   `/readyz` stays `503` and the platforms keep the old version serving.
-2. Move the branch (merge the pull request). Each cloud builds (running
-   the tests) and deploys.
-3. Check every cloud: `/readyz`, the same `version` on `/healthz`, and a
-   write through an API outside the primary's cloud.
-4. If only some clouds failed, run their build again: the migrations are
-   additive, so the old and new versions can run side by side.
-5. After prod is checked, merge a pull request from `prod` into `main`.
+### 1. Develop locally
 
-Dropping a column or table is a hand-written migration in the release
-**after** every environment runs a version that no longer uses it
-([models.md](models.md)).
+```bash
+git switch dev && git pull
+git switch -c feature/<name>
+# ... change the code / models/*.yaml / migrations ...
+npm run generate               # after changing models/*.yaml (docs/models.md)
+npm run typecheck && npm test
+```
 
-**Rolling back**: revert on the environment's branch; the previous version
-is deployed again. The database changes stay (they are additive).
+Then check the change in the local compose environment (README, "Local
+testing"): rebuild the APIs, apply new migrations, and run the scripts the
+change needs:
 
-**Hotfix**: branch `hotfix/*` from `prod`, merge it into `prod` by pull
-request (through `staging` first if it needs testing), then merge `prod`
-into `staging` and `staging` into `dev` by pull request so that the fix is
-not lost by the next promotion.
+```bash
+docker compose up -d --build
+docker compose run --rm tools scripts/migrate.sh
+docker compose run --rm tools scripts/replication-setup.sh   # if a table was added
+docker compose run --rm tools scripts/api-role-setup.sh      # if a function for the API was added
+curl localhost:8081/readyz                                   # 200 on every API (8081-8083)
+```
+
+Changes to writes, SQL, migrations or scripts also need a write through an
+API outside the primary and, for write routing, a switchover (README).
+
+Push and open a pull request to `dev`:
+
+```bash
+git push -u origin feature/<name>
+gh pr create --base dev --title "<what changes>" --body "<why; migrations; scripts to run>"
+```
+
+In the pull request, list the database steps the release needs (new
+migrations, `replication-setup.sh`, `api-role-setup.sh`): they must be done
+in every environment before its branch moves.
+
+### 2. Release to an environment (dev, stg, prod)
+
+The same steps for each environment, in this order: dev (merging the
+feature pull request), then stg (`dev` → `staging`), then prod (`staging`
+→ `prod`).
+
+1. **Update the environment's databases first**, from that environment's
+   script host ([getting-started.md](getting-started.md)), when the release
+   contains migrations:
+
+   ```bash
+   git fetch && git switch --detach origin/<branch to be released>   # e.g. origin/dev before a stg release
+   scripts/migrate.sh
+   scripts/replication-setup.sh && scripts/replication-status.sh   # if a table was added
+   scripts/api-role-setup.sh                                       # if a function for the API was added
+   ```
+
+   The API builds its SQL from the models at startup, so a version that
+   uses new tables or columns does not work before this. If it is
+   forgotten, the new version's `/readyz` stays `503` and the platforms
+   keep the old version serving. Migrations are additive, so the running
+   version keeps working after this step.
+
+2. **Merge the pull request** of that environment:
+
+   ```bash
+   # dev: merge the feature pull request
+   gh pr merge <number> --merge --delete-branch
+   # stg / prod: open and merge a promotion pull request
+   gh pr create --base staging --head dev --title "Release to stg" --body ""
+   gh pr create --base prod --head staging --title "Release to prod" --body ""
+   gh pr merge <number> --merge
+   ```
+
+   Each cloud builds the image (the build runs the tests and stops on a
+   failure) and deploys it: AWS CodeBuild → ECS, Cloud Build → Cloud Run,
+   Azure Pipelines → Container Apps.
+
+3. **Check every cloud** of the environment:
+
+   ```bash
+   curl https://<endpoint>/healthz   # same "version" on the three clouds
+   curl https://<endpoint>/readyz    # 200
+   ```
+
+   and a write through an API outside the primary's cloud (README, "Check
+   the APIs").
+
+4. If only some clouds failed, fix the cause and run their build again
+   (CodeBuild, Cloud Build trigger, Azure Pipelines): the old and new
+   versions can run side by side while the migrations are additive.
+
+5. Before the next environment, check the changes in this one long enough
+   for the release (functions, performance, logs).
+
+### 3. Record the release in `main`
+
+After prod is checked:
+
+```bash
+gh pr create --base main --head prod --title "Released to prod" --body ""
+gh pr merge <number> --merge
+git fetch && git tag vX.Y.Z origin/main && git push origin vX.Y.Z   # optional
+```
+
+`main` starts no build; it shows what is in prod.
+
+### Dropping columns or tables
+
+A drop is a hand-written migration in the release **after** every
+environment runs a version that no longer uses the column or table
+([models.md](models.md)). Otherwise the running version fails as soon as
+the migration is applied.
+
+### Rolling back
+
+Revert on the environment's branch by pull request; the previous version is
+deployed again:
+
+```bash
+git switch -c revert/<name> origin/<branch>
+git revert -m 1 <merge commit>     # the merge commit of the release
+git push -u origin revert/<name>
+gh pr create --base <branch> --title "Revert <release>" --body ""
+```
+
+The database changes stay (they are additive; the previous version ignores
+them). The earlier branches (e.g. `dev`) still contain the change: fix it
+there and promote the fix as usual. The revert stays in the environment's
+branch, so to release the change again later, revert the revert in `dev`
+and promote it.
+
+### Hotfix
+
+```
+prod --> hotfix/* --PR--> prod --PR--> main
+                            \--PR--> staging --PR--> dev
+```
+
+```bash
+git switch -c hotfix/<name> origin/prod
+# ... fix, npm run typecheck && npm test, local check ...
+git push -u origin hotfix/<name>
+gh pr create --base prod --title "Hotfix: <what>" --body ""
+```
+
+To test it on stg first, merge it into `staging` before `prod`. Database
+steps are the same as for a release (step 2.1). After the release, bring
+the fix back so that the next promotion does not remove it:
+
+```bash
+gh pr create --base staging --head prod --title "Back-merge hotfix" --body ""
+gh pr create --base dev --head staging --title "Back-merge hotfix" --body ""
+```
+
+Merge these with a merge commit too, and record prod in `main` (section 3).
 
 ## Monitoring replication
 
@@ -344,12 +473,14 @@ subscriptions. Reset it, then add it as a new node.
 
 ## Passwords
 
-- **API role:** every API connects to every node (writes go to the
-  primary), so a node's API password is used by all clouds. Set the new
-  password in `NODE_<N>_API_PASSWORD` and run
-  `scripts/api-role-setup.sh <node>`; then update `DB_PASSWORD` (that
-  cloud) and `DB_<NODE>_PASSWORD` (the other clouds) in the secret stores and
-  restart all APIs. Existing connections keep working until then.
+- **API role:** every node's `app_api` has the same password, stored in
+  every cloud's secret `db-api-password` ([getting-started.md](getting-started.md)).
+  Set the new password in every `NODE_<N>_API_PASSWORD` and run
+  `scripts/api-role-setup.sh`; then update `db-api-password` in every
+  cloud's secret store and restart all APIs (a new deployment: the
+  platforms read the secret when a container starts). Existing connections
+  keep working until then, but new ones fail: do it at a quiet time and
+  without delay between the steps.
 - **Replication role:** change `NODE_<N>_REPL_PASSWORD` and run
   `scripts/replication-setup.sh`. It sets the new password on the role and
   updates the connection string of the subscriptions that use it. Between

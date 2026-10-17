@@ -193,6 +193,9 @@ replication does not replicate DDL, and the publication must be refreshed to
 include new tables. Then rebuild the APIs (`docker compose up -d --build`):
 they read the models at startup.
 
+To release the change (feature branch → `dev` → `staging` → `prod` →
+`main`), see [Releases](docs/operations.md#releases).
+
 ### 6. Logs and cleanup
 
 ```bash
