@@ -26,7 +26,7 @@ steps:
       IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:${BUILD_SOURCEVERSION:0:12}"
       az login --identity --client-id "$AZURE_CLIENT_ID" --only-show-errors --output none
       az acr login --name "$ACR_NAME" --only-show-errors
-      docker build -t "$IMAGE" .
+      docker build --build-arg APP_VERSION="$BUILD_SOURCEVERSION" -t "$IMAGE" .
       docker push "$IMAGE"
       az containerapp update --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
         --image "$IMAGE" --only-show-errors --output none

@@ -13,13 +13,18 @@ describe("loadConfig", () => {
     const config = loadConfig(base);
     expect(config.port).toBe(8080);
     expect(config.graphiql).toBe(false);
-    expect(config.db).toMatchObject({ port: 5432, sslMode: "require", poolMax: 10 });
+    expect(config.version).toBe("unknown");
+    expect(config.db).toMatchObject({ port: 5432, sslMode: "require", poolMax: 4 });
     expect(config.peers).toEqual({});
     expect(config.writes).toEqual({
       ackPeers: 0,
       ackTimeoutMs: 3000,
       primaryRefreshMs: 5000,
     });
+  });
+
+  test("reads the version the image was built from", () => {
+    expect(loadConfig({ ...base, APP_VERSION: "0123abc" }).version).toBe("0123abc");
   });
 
   test("reads peers; their settings default to this cloud's database", () => {
@@ -42,8 +47,13 @@ describe("loadConfig", () => {
       user: "app_api",
       password: "g",
       sslMode: "disable",
+      poolMax: 3,
     });
     expect(config.peers.azure).toMatchObject({ user: "other", sslMode: "require" });
+    expect(
+      loadConfig({ ...base, PEER_NODES: "google", DB_GOOGLE_HOST: "h", DB_GOOGLE_PASSWORD: "p", DB_PEER_POOL_MAX: "2" })
+        .peers.google.poolMax,
+    ).toBe(2);
     expect(config.writes.ackPeers).toBe(1);
   });
 

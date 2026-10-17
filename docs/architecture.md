@@ -34,7 +34,7 @@
 | --- | --- |
 | `src/index.ts` | Loads the configuration, creates one connection pool per node, starts the server, closes cleanly on `SIGTERM` / `SIGINT` |
 | `src/config.ts` | Reads and validates environment variables; a misconfigured container fails at startup |
-| `src/server.ts` | HTTP server: `/`, `/healthz` (liveness), `/readyz` (readiness of this cloud's database), `/graphql` |
+| `src/server.ts` | HTTP server: `/`, `/healthz` (liveness), `/readyz` (readiness of this cloud's database, including its migrations), `/graphql` |
 | `src/cluster.ts` | Write routing: finds the primary (`ClusterState`), runs write transactions on it, records them in the journal, handles idempotency keys and waits for the confirmation (`PrimaryWriter`) |
 | `models/*.yaml` | Model definitions, one per table ([models.md](models.md)) |
 | `src/models/` | Reading and validating the definitions (`load.ts`); DDL and the snapshot diff (`ddl.ts`) |
@@ -208,6 +208,14 @@ Each cloud builds the same `Dockerfile` with its own CI/CD:
 | AWS | `buildspec.yml` (CodeBuild) | ECS (Blue/Green) |
 | Google Cloud | `cloudbuild.yaml` (Cloud Build) | Cloud Run |
 | Azure | `azure-pipelines.yml` (Azure Pipelines) | Container Apps |
+
+The build stage runs `npm test`, so a failing test (including a missing
+migration or an outdated `generated/schema.graphql`) stops the build before
+any cloud deploys it. The pipelines pass the commit as `APP_VERSION`, which
+the health endpoints return. A new version becomes ready (`/readyz`) only
+when its migrations are applied to that cloud's database
+(`src/migrations.ts`), so the platforms keep the old version serving when
+the database update was forgotten.
 
 The pipelines, their triggers and their variables are created by the
 infrastructure repository.

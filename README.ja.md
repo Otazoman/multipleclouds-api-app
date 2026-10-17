@@ -20,7 +20,7 @@ AWS・Google Cloud・Azure に **アクティブ/アクティブ** でデプロ�
 
 - [モデル定義](docs/models.ja.md) — YAML の書式、生成される API、マイグレーション
 - [はじめに](docs/getting-started.ja.md) — クラウドへの初回デプロイ
-- [運用](docs/operations.ja.md) — マイグレーション、レプリケーションの監視、障害対応、ノードの追加・削除、パスワード
+- [運用](docs/operations.ja.md) — マイグレーション、リリース（環境ごとのブランチ）、レプリケーションの監視、障害対応、ノードの追加・削除、パスワード
 - [アーキテクチャ](docs/architecture.ja.md) — コンポーネント、データモデル、書き込みの経路、レプリケーション
 
 ## リポジトリの構成
@@ -116,7 +116,7 @@ docker compose run --rm tools scripts/replication-status.sh  # 状態を確認
 状態確認の出力で、すべてのノードが `primary_node = aws`、すべてのサブスクリプションが
 `enabled = t`、すべてのスロットが `active = t`、エラー件数が `0` であることを確認します。
 
-`api-role-setup.sh` を実行するまでは `/readyz` が `503` を返しますが、これは想定どおりです。
+`migrate.sh` と `api-role-setup.sh` を実行するまでは `/readyz` が `503` を返しますが、これは想定どおりです。
 `switchover.sh` を実行するまでは、書き込みが `PRIMARY_UNAVAILABLE` で失敗します。
 API は 5 秒以内（`PRIMARY_REFRESH_INTERVAL_MS`）にプライマリを認識します。
 
@@ -125,8 +125,8 @@ API は 5 秒以内（`PRIMARY_REFRESH_INTERVAL_MS`）にプライマリを認�
 ヘルスチェック：
 
 ```bash
-curl localhost:8081/healthz    # liveness:  {"status":"ok","cloud":"aws"}
-curl localhost:8081/readyz     # readiness: データベースに接続できるか
+curl localhost:8081/healthz    # liveness:  {"status":"ok","cloud":"aws","version":"unknown"}
+curl localhost:8081/readyz     # readiness: データベースに接続でき、マイグレーションが適用済みか
 ```
 
 `aws` でアイテムを作成：
@@ -210,10 +210,12 @@ API は環境変数から設定を読みます（`src/config.ts`）。[.env.samp
 | `CLOUD_ID`         | このインスタンスが動くクラウド（`aws`、`google`、`azure`） |
 | `PORT`             | 待ち受けポート（既定 `8080`）                       |
 | `GRAPHIQL_ENABLED` | `true` で `/graphql` に GraphiQL を提供（ローカル専用） |
+| `APP_VERSION`      | イメージのコミット。ヘルスチェックの応答に含める（`Dockerfile` が設定。既定 `unknown`） |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | 自クラウドのデータベース |
 | `DB_SSLMODE`       | `disable`、`require`（既定）、`verify-full`         |
 | `DB_SSL_CA_FILE`   | `verify-full` 用の CA バンドル                      |
-| `DB_POOL_MAX`      | ノードごとのコネクションプールのサイズ（既定 `10`） |
+| `DB_POOL_MAX`      | 自クラウドのデータベースのコネクションプールのサイズ（既定 `4`） |
+| `DB_PEER_POOL_MAX` | `PEER_NODES` の各ノードのコネクションプールのサイズ。書き込みに使う（既定 `3`） |
 | `PEER_NODES`       | 他のノード（カンマ区切り。例：`google,azure`）      |
 | `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | `PEER_NODES` の各ノードのデータベース（必須） |
 | `DB_<NODE>_PORT`, `_NAME`, `_USER`, `_SSLMODE`, `_SSL_CA_FILE` | 任意。省略時は自クラウドの `DB_*` と同じ（ポートは `5432`） |
@@ -256,5 +258,8 @@ mutation {
 | パス       | 説明                                         |
 | ---------- | -------------------------------------------- |
 | `/`, `/healthz` | liveness（データベースにアクセスしない）|
-| `/readyz`  | readiness（自クラウドのデータベースに `SELECT 1`。プライマリは確認しない） |
+| `/readyz`  | readiness：自クラウドのデータベースが応答し、イメージに含まれるマイグレーションがすべて適用済み（そのノードで `scripts/migrate.sh` を実行するまで `503`）。プライマリは確認しない |
+
+ヘルスチェックはどれも `{"status", "cloud", "version"}` を返します。`version` はイメージのビルド元の
+コミットで、すべてのクラウドで同じ版が動いているかの確認に使います。
 | `/graphql` | GraphQL API                                  |

@@ -34,7 +34,7 @@
 | --- | --- |
 | `src/index.ts` | 設定の読み込み、ノードごとのコネクションプールの作成、サーバーの起動、`SIGTERM` / `SIGINT` での正常終了 |
 | `src/config.ts` | 環境変数の読み込みと検証。設定に誤りがあるコンテナは起動時に失敗する |
-| `src/server.ts` | HTTP サーバー：`/`・`/healthz`（liveness）、`/readyz`（自クラウドの DB の readiness）、`/graphql` |
+| `src/server.ts` | HTTP サーバー：`/`・`/healthz`（liveness）、`/readyz`（自クラウドの DB の readiness。マイグレーションの適用を含む）、`/graphql` |
 | `src/cluster.ts` | 書き込みの経路：プライマリの特定（`ClusterState`）、プライマリでのトランザクション実行、変更履歴への記録、冪等キーの処理、確認待ち（`PrimaryWriter`） |
 | `models/*.yaml` | モデル定義。テーブルごとに1つ（[models.ja.md](models.ja.md)） |
 | `src/models/` | 定義の読み込みと検証（`load.ts`）、DDL とスナップショットとの差分（`ddl.ts`） |
@@ -186,6 +186,8 @@ DDL はレプリケーションされません。各マイグレーションは 
 | AWS | `buildspec.yml`（CodeBuild） | ECS（Blue/Green） |
 | Google Cloud | `cloudbuild.yaml`（Cloud Build） | Cloud Run |
 | Azure | `azure-pipelines.yml`（Azure Pipelines） | Container Apps |
+
+ビルド段階で `npm test` を実行します。テストが失敗すると（マイグレーションの不足や `generated/schema.graphql` の古さを含む）ビルドが止まり、どのクラウドにもデプロイされません。パイプラインはコミットを `APP_VERSION` として渡し、ヘルスチェックがそれを返します。新しい版は、そのクラウドの DB にマイグレーションが適用されるまで準備完了（`/readyz`）になりません（`src/migrations.ts`）。DB の更新を忘れても、コンテナ基盤は古い版でサービスを続けます。
 
 パイプライン、トリガー、変数はインフラのリポジトリで作成します。
 

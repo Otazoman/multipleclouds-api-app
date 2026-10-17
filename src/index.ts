@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { ClusterState, PrimaryWriter } from "./cluster";
 import { loadConfig } from "./config";
 import { createPool } from "./db";
+import { MigrationCheck, migrationVersions } from "./migrations";
 import { loadModels } from "./models/load";
 import { createAppServer, GRAPHQL_PATH } from "./server";
 
@@ -27,12 +28,15 @@ const server = createAppServer(
   writer,
   config.cloudId,
   config.graphiql,
+  config.version,
+  // A missing migrations/ stops the container at startup, like invalid models.
+  new MigrationCheck(pool, migrationVersions()),
 );
 
 void cluster.start();
 server.listen(config.port, () => {
   console.log(
-    `API (${config.cloudId}) listening on :${config.port}${GRAPHQL_PATH}`,
+    `API (${config.cloudId}, ${config.version}) listening on :${config.port}${GRAPHQL_PATH}`,
   );
 });
 

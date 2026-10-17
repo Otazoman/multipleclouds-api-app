@@ -122,6 +122,7 @@ silently diverge the databases.
 | `src/config.ts` | Environment variables (validated at startup) |
 | `src/server.ts` | HTTP server: health endpoints and `/graphql` |
 | `src/cluster.ts` | Write routing: primary lookup, write transactions, commit confirmation |
+| `src/migrations.ts` | Readiness: are this image's migrations applied to this cloud's database |
 | `models/*.yaml` | Model definitions (tables and the GraphQL API); see `docs/models.md` |
 | `src/models/` | Loading / validating models; DDL and snapshot diff |
 | `src/schema.ts` | GraphQL schema generated from the models |

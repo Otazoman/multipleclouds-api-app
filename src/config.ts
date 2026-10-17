@@ -20,6 +20,8 @@ export interface AppConfig {
    * cluster. Stored on new rows as the creating cloud.
    */
   cloudId: string;
+  /** Commit the image was built from (APP_VERSION, set by the Dockerfile). */
+  version: string;
   port: number;
   /** Serves the GraphiQL IDE on /graphql (local development only). */
   graphiql: boolean;
@@ -41,7 +43,12 @@ const SSL_MODES: readonly SslMode[] = ["disable", "require", "verify-full"];
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_DB_PORT = 5432;
-const DEFAULT_POOL_MAX = 10;
+// Every instance has a pool per node and every node may be the primary, so
+// the primary's connections are about (instances in its cloud x DB_POOL_MAX)
+// + (other instances x DB_PEER_POOL_MAX); keep it below max_connections.
+const DEFAULT_POOL_MAX = 4;
+// Peers get only writes (short, one at a time per connection).
+const DEFAULT_PEER_POOL_MAX = 3;
 const DEFAULT_ACK_PEERS = 1;
 const DEFAULT_ACK_TIMEOUT_MS = 3000;
 const DEFAULT_PRIMARY_REFRESH_MS = 5000;
@@ -96,9 +103,10 @@ const nodeName = (name: string, value: string): string => {
 
 /**
  * Settings of another node, from DB_<NODE>_*. HOST and PASSWORD are
- * required; the others default to this cloud's database settings.
+ * required; the others default to this cloud's database settings, except
+ * the pool size (DB_PEER_POOL_MAX).
  */
-const peerDb = (env: Env, node: string, local: DbConfig): DbConfig => {
+const peerDb = (env: Env, node: string, local: DbConfig, poolMax: number): DbConfig => {
   const prefix = `DB_${node.toUpperCase()}_`;
   const sslMode = sslModeOf(env, `${prefix}SSLMODE`, local.sslMode);
   const caFile = env[`${prefix}SSL_CA_FILE`];
@@ -110,7 +118,7 @@ const peerDb = (env: Env, node: string, local: DbConfig): DbConfig => {
     password: required(env, `${prefix}PASSWORD`),
     sslMode,
     sslCa: caFile ? readFileSync(caFile, "utf8") : local.sslCa,
-    poolMax: local.poolMax,
+    poolMax,
   };
 };
 
@@ -150,9 +158,10 @@ export const loadConfig = (env: Env = process.env): AppConfig => {
       "Environment variable PEER_NODES must not repeat a node or include CLOUD_ID",
     );
   }
+  const peerPoolMax = integer(env, "DB_PEER_POOL_MAX", DEFAULT_PEER_POOL_MAX);
   const peers: Record<string, DbConfig> = {};
   for (const name of peerNames) {
-    peers[name] = peerDb(env, name, db);
+    peers[name] = peerDb(env, name, db, peerPoolMax);
   }
 
   const ackPeers = integer(
@@ -169,6 +178,7 @@ export const loadConfig = (env: Env = process.env): AppConfig => {
 
   return {
     cloudId,
+    version: env.APP_VERSION || "unknown",
     port: integer(env, "PORT", DEFAULT_PORT),
     graphiql: env.GRAPHIQL_ENABLED === "true",
     db,

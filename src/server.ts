@@ -2,6 +2,7 @@ import { createServer, Server, ServerResponse } from "node:http";
 import { createYoga } from "graphql-yoga";
 import { Pool } from "pg";
 import { PrimaryWriter } from "./cluster";
+import { MigrationCheck } from "./migrations";
 import { Loaders } from "./data/loaders";
 import { QueryRunner } from "./data/queries";
 import { createPgRepository } from "./data/repository";
@@ -22,11 +23,13 @@ const sendJson = (res: ServerResponse, status: number, body: object): void => {
 /**
  * Builds the HTTP server:
  * - `/` and `/healthz`: liveness (the process is up; no DB access)
- * - `/readyz`: readiness (this cloud's database answers; the primary is not
- *   checked, so that reads keep being served while it is down)
+ * - `/readyz`: readiness (this cloud's database answers and has every
+ *   migration of this version; the primary is not checked, so that reads
+ *   keep being served while it is down)
  * - `/graphql`: the API
  *
  * `pool` is this cloud's database (reads); writes go through `writer`.
+ * `version` (the build's commit) is returned by the health endpoints.
  * The GraphQL API is generated from `models` (models/*.yaml).
  */
 export const createAppServer = (
@@ -35,6 +38,8 @@ export const createAppServer = (
   writer: PrimaryWriter,
   cloudId: string,
   graphiql: boolean,
+  version: string,
+  migrations: MigrationCheck,
 ): Server => {
   const services = new Map(
     models.map((model) => [
@@ -65,16 +70,26 @@ export const createAppServer = (
   return createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0];
     if (req.method === "GET" && LIVENESS_PATHS.has(path)) {
-      sendJson(res, 200, { status: "ok", cloud: cloudId });
+      sendJson(res, 200, { status: "ok", cloud: cloudId, version });
       return;
     }
     if (req.method === "GET" && path === READINESS_PATH) {
-      pool
-        .query("SELECT 1")
-        .then(() => sendJson(res, 200, { status: "ok", cloud: cloudId }))
+      const unavailable = (): void =>
+        sendJson(res, 503, { status: "unavailable", cloud: cloudId, version });
+      migrations
+        .missing()
+        .then((missing) => {
+          if (missing.length === 0) {
+            sendJson(res, 200, { status: "ok", cloud: cloudId, version });
+            return;
+          }
+          // Run scripts/migrate.sh (docs/operations.md, "Releases").
+          console.error(`Readiness check failed: migrations not applied: ${missing.join(", ")}`);
+          unavailable();
+        })
         .catch((error: Error) => {
           console.error("Readiness check failed:", error.message);
-          sendJson(res, 503, { status: "unavailable", cloud: cloudId });
+          unavailable();
         });
       return;
     }

@@ -15,6 +15,7 @@ steps:
     name: gcr.io/cloud-builders/docker
     args:
       - build
+      - --build-arg=APP_VERSION=$COMMIT_SHA
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
       - .

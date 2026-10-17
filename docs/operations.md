@@ -36,7 +36,10 @@ migration.
    scripts/replication-status.sh
    ```
 
-5. Deploy the API.
+5. Deploy the API ([Releases](#releases)). If the migration added a
+   function the API calls, run `scripts/api-role-setup.sh` first. The new
+   API is not ready (`/readyz` returns `503`) on a node that lacks one of
+   its migrations.
 
 Why the order matters: if a node receives a change for a table or column it
 does not have yet, applying the change fails and that subscription stops
@@ -44,6 +47,59 @@ until the migration is applied there.
 
 Dropping or renaming a column: first deploy an API that no longer uses it,
 then apply the migration to every node.
+
+## Releases
+
+Each environment deploys its own branch of this repository (the triggers
+are set by the infrastructure repository):
+
+| Branch | Deploys to |
+| --- | --- |
+| `dev` | dev environment (development; feature branches are merged here by pull request) |
+| `staging` | stg environment |
+| `prod` | prod environment |
+| `main` | nothing: keeps the code released to prod (tag `vX.Y.Z` if needed) |
+
+Every branch changes only through pull requests (branch rules on GitHub).
+A promotion is a pull request from the previous branch, merged with a merge
+commit (the only method allowed on `staging`, `prod` and `main`; squash or
+rebase would make the branches diverge), so each environment gets the code
+that was tested before it:
+
+```
+feature/* --PR--> dev --PR--> staging --PR--> prod --PR--> main
+```
+
+The merge commits differ per branch, so the `version` on `/healthz` differs
+between environments; within an environment, every cloud must show the same.
+
+For each environment, before moving its branch:
+
+1. Update its databases (from that environment's script host):
+   `scripts/migrate.sh`; then `scripts/replication-setup.sh` if a table was
+   added, and `scripts/api-role-setup.sh` if a function for the API was
+   added. The API builds its SQL from the models at startup, so a version
+   that uses new tables or columns does not work before this; its
+   `/readyz` stays `503` and the platforms keep the old version serving.
+2. Move the branch (merge the pull request). Each cloud builds (running
+   the tests) and deploys.
+3. Check every cloud: `/readyz`, the same `version` on `/healthz`, and a
+   write through an API outside the primary's cloud.
+4. If only some clouds failed, run their build again: the migrations are
+   additive, so the old and new versions can run side by side.
+5. After prod is checked, merge a pull request from `prod` into `main`.
+
+Dropping a column or table is a hand-written migration in the release
+**after** every environment runs a version that no longer uses it
+([models.md](models.md)).
+
+**Rolling back**: revert on the environment's branch; the previous version
+is deployed again. The database changes stay (they are additive).
+
+**Hotfix**: branch `hotfix/*` from `prod`, merge it into `prod` by pull
+request (through `staging` first if it needs testing), then merge `prod`
+into `staging` and `staging` into `dev` by pull request so that the fix is
+not lost by the next promotion.
 
 ## Monitoring replication
 

@@ -20,7 +20,7 @@ databases replicate to each other with bidirectional logical replication.
 
 - [Model definitions](docs/models.md) — the YAML format, generated API, migrations
 - [Getting started](docs/getting-started.md) — first deployment to the clouds
-- [Operations](docs/operations.md) — migrations, replication monitoring, outages, adding / removing nodes, passwords
+- [Operations](docs/operations.md) — migrations, releases (branches per environment), replication monitoring, outages, adding / removing nodes, passwords
 - [Architecture](docs/architecture.md) — components, data model, write routing, replication
 
 ## Repository layout
@@ -119,7 +119,8 @@ docker compose run --rm tools scripts/replication-status.sh  # check
 In the status output, every node should show `primary_node = aws`, every
 subscription `enabled = t`, every slot `active = t`, and the error counts `0`.
 
-Until `api-role-setup.sh` has run, `/readyz` returns `503`; this is expected.
+Until `migrate.sh` and `api-role-setup.sh` have run, `/readyz` returns `503`;
+this is expected.
 Until `switchover.sh` has run, writes fail with `PRIMARY_UNAVAILABLE`. The
 APIs pick up the primary within 5 seconds (`PRIMARY_REFRESH_INTERVAL_MS`).
 
@@ -128,8 +129,8 @@ APIs pick up the primary within 5 seconds (`PRIMARY_REFRESH_INTERVAL_MS`).
 Health checks:
 
 ```bash
-curl localhost:8081/healthz    # liveness:  {"status":"ok","cloud":"aws"}
-curl localhost:8081/readyz     # readiness: database reachable
+curl localhost:8081/healthz    # liveness:  {"status":"ok","cloud":"aws","version":"unknown"}
+curl localhost:8081/readyz     # readiness: database reachable and migrated
 ```
 
 Create an item on `aws`:
@@ -215,10 +216,12 @@ from each cloud's secret store.
 | `CLOUD_ID`         | Cloud this instance runs on (`aws`, `google`, `azure`) |
 | `PORT`             | Listening port (default `8080`)                     |
 | `GRAPHIQL_ENABLED` | `true` serves GraphiQL on `/graphql` (local only)   |
+| `APP_VERSION`      | Commit of the image, returned by the health endpoints (set by the `Dockerfile`; default `unknown`) |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | This cloud's database |
 | `DB_SSLMODE`       | `disable`, `require` (default) or `verify-full`     |
 | `DB_SSL_CA_FILE`   | CA bundle for `verify-full`                         |
-| `DB_POOL_MAX`      | Connection pool size per node (default `10`)        |
+| `DB_POOL_MAX`      | Connection pool size for this cloud's database (default `4`) |
+| `DB_PEER_POOL_MAX` | Connection pool size for each node in `PEER_NODES`, used for writes (default `3`) |
 | `PEER_NODES`       | The other nodes, comma-separated (e.g. `google,azure`) |
 | `DB_<NODE>_HOST`, `DB_<NODE>_PASSWORD` | Database of each node in `PEER_NODES` (required) |
 | `DB_<NODE>_PORT`, `_NAME`, `_USER`, `_SSLMODE`, `_SSL_CA_FILE` | Optional; default to this cloud's `DB_*` (port `5432`) |
@@ -262,5 +265,9 @@ Keys are kept as long as the write journal keeps the write
 | Path       | Description                                  |
 | ---------- | -------------------------------------------- |
 | `/`, `/healthz` | Liveness (no database access)           |
-| `/readyz`  | Readiness (`SELECT 1` on this cloud's database; the primary is not checked) |
+| `/readyz`  | Readiness: this cloud's database answers and has every migration in the image (`503` until `scripts/migrate.sh` has run there); the primary is not checked |
+
+Every health endpoint returns `{"status", "cloud", "version"}`; `version`
+is the commit the image was built from, to check that every cloud runs the
+same release.
 | `/graphql` | GraphQL API                                  |

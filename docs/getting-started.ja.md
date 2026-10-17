@@ -91,7 +91,7 @@ scripts/replication-status.sh  # 確認
 
 ## 5. デプロイ
 
-パイプラインが監視しているブランチに push します。各クラウドがイメージをビルドし、新しいリビジョンを展開します：
+環境ごとに、それぞれのブランチ（`dev`、`staging`、`prod`）からデプロイします（[operations.ja.md](operations.ja.md#リリース)）。環境のブランチにマージすると、各クラウドがイメージをビルドし（ビルドでテストを実行）、新しいリビジョンを展開します：
 
 - AWS：CodeBuild → ECR → ECS Blue/Green（サービスが安定しなければビルドが失敗する）
 - Google Cloud：Cloud Build → Artifact Registry → Cloud Run
@@ -102,16 +102,17 @@ scripts/replication-status.sh  # 確認
 各クラウドのエンドポイントで確認します：
 
 ```bash
-curl https://<endpoint>/healthz   # {"status":"ok","cloud":"<cloud>"}
-curl https://<endpoint>/readyz    # データベースが応答すれば 200
+curl https://<endpoint>/healthz   # {"status":"ok","cloud":"<cloud>","version":"<commit>"}
+curl https://<endpoint>/readyz    # データベースが応答し、マイグレーションが適用済みなら 200
 ```
 
 続けて、README のローカルテストと同じように、あるクラウドでアイテムを作成し、別のクラウドから
 読み出します。API のログに `Primary: <node> (epoch N)` が出ていることも確認します。
 プライマリ以外のクラウドの API から書き込むと、クラウド間の経路を確認できます。そこで
 `PRIMARY_UNAVAILABLE` になる場合は、多くの場合、そのコンテナからプライマリのデータベースに
-接続できていません（経路、ファイアウォール / セキュリティグループ / NSG、プライベート DNS）。`readyz` が `503` を返す場合は、多くの場合 API がデータベースに接続・ログインできて
-いません。`DB_*` と、そのノードで `scripts/api-role-setup.sh` を実行したかを確認してください。
+接続できていません（経路、ファイアウォール / セキュリティグループ / NSG、プライベート DNS）。`readyz` が `503` を返す場合は、多くの場合 API がデータベースに接続・ログインできていないか、
+そのノードにマイグレーションが足りません（API のログに名前が出ます）。`DB_*` と、そのノードで
+`scripts/migrate.sh` と `scripts/api-role-setup.sh` を実行したかを確認してください。
 
 初回デプロイの後、スクリプト用ホストで `scripts/journal-prune.sh` を定期実行（例：毎日）するよう
 設定してください。[operations.ja.md](operations.ja.md#変更履歴ジャーナル) を参照してください。

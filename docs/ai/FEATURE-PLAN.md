@@ -1,7 +1,7 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
 - 作成日: 2026-10-12
-- ステータス: フェーズ 0a・0b・1・2 は実装済み（ブランチ `feature/primary-writes-and-models`、コミット `31bb879`。どの環境のブランチにも未マージ）。ブランチ運用は決定済み（§7）・移行は未着手。**作業は別日に再開する。再開時は §8 から**。
+- ステータス: フェーズ 0a・0b・1・2 は実装済み（ブランチ `feature/primary-writes-and-models`。2026-10-17 の履歴の書き換え前のコミット ID は `31bb879`。どの環境のブランチにも未マージ）。ブランチ運用は決定済み（§7）・移行は未着手。**作業は別日に再開する。再開時は §8 から**。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§12（CI/CD 連携）と対応する。
 
 ## 1. 実装済みの内容（要約）
@@ -38,17 +38,17 @@
 | API-03 | P1 | クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認 | 未着手 |
 | API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手 |
 | API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整 | 未着手 |
-| API-06 | P2 | DB の接続数: 各インスタンスが全ノードにプールを持ち、書き込みはプライマリに集中する。最大インスタンス数（ECS 10、Container Apps 10、Cloud Run 2）× プール 10 で、プライマリへの接続が最大約 220 となり `max_connections = 100` を超え得る。インフラ側の対策を検討（RDS Proxy、Cloud SQL Managed Connection Pooling、Azure Flexible Server の PgBouncer。トランザクション単位のプーリングと相性はよいが、確認待ちの間は接続を占有する）。プールのサイズ（`DB_POOL_MAX`）の見直しも | 検討中（インフラ側） |
-| API-07 | P2 | `journal-prune.sh` の定期実行の方法（§4.3） | 未決定 |
-| API-08 | P2 | シークレットの管理方式（§5） | 検討中 |
+| API-06 | P2 | DB の接続数: 各インスタンスが全ノードにプールを持ち、書き込みはプライマリに集中する。最大インスタンス数（ECS 10、Container Apps 10、Cloud Run 2）× プール 10 で、プライマリへの接続が最大約 220 となり `max_connections = 100` を超え得た | **決定・実装済み（2026-10-17、未コミット）**: アプリ側の 1＋2。`DB_POOL_MAX` の既定 10 → 4、他ノード用 `DB_PEER_POOL_MAX`（既定 3）を追加。プライマリへの接続は最大約 76。書き込みの上限の目安は毎秒 700〜800 件（1 件約 85ms の想定。dev で実測して確認: API-05）。マネージドの接続プーリングは採用しない（確認待ちの間も接続を占有するため効果が小さい）。ローカルで他ノードから 20 件同時の書き込みが成功し、プライマリへの接続が 3 に収まることを確認 |
+| API-07 | P2 | `journal-prune.sh` の定期実行の方法（§4.3）。必要な理由: ジャーナルは書き込みのたびに引数と結果（レコードの内容）を保存するため、削除しないと容量が増え続け、削除したレコードの内容も残り続ける。再シードも遅くなる | 未決定（本番前までに。当面は手動） |
+| API-08 | P2 | シークレットの管理方式（§5） | **決定（2026-10-17）**: 案 A'。3 ノードで同じ `app_api` パスワードを使い（各 API は全ノードのパスワードを持つため、分けても漏洩時の影響は変わらない）、値は作業用 VM から CLI で各クラウドのストアに入れる。Azure Key Vault は非公開のまま。cdktn は入れ物（AWS・Google はダミー値）だけを作る（FEAT-01 §7 のまま） |
 | API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更 | 未着手 |
 | API-10 | P3 | フェーズ 3: MySQL 対応。まず3クラウドのマネージド MySQL で、レプリケーションの複製元を付け替えられるか（どのクラウドもプライマリになれるか）を PoC で確認。成り立つ場合のみ、DB 依存部分（確認待ち・切り替え・SQL の方言・DDL 生成）をアダプターに分離して実装 | 未着手 |
 | API-11 | P3 | 強制切り替えで受信量が少なかったノードの修復を、初期化（再シード）ではなく変更履歴から行えるようにする（現状は `journal-diff.sh` で一覧にするだけ） | 未着手 |
 | API-12 | P3 | 名前付きクエリの SQL を起動時または `npm run generate` 時に検証する（現状は実行するまで分からない） | 未着手 |
 | API-13 | P3 | `compose.yaml` 冒頭のコメントがローカル環境の説明として `docs/getting-started.md` を指している（実際は README） | 未着手 |
-| API-14 | P1 | ローカルの `main` が `origin/main` より 1 コミット先行（feature ブランチと同じ未リリースのコミット）。§7 の運用では main はリリース済みのコードだけなので、`origin/main` に戻す（ローカルのみの操作。要承認） | 未着手 |
-| API-15 | P1 | ブランチ運用への移行（§7.5）: `dev`・`staging`・`prod` ブランチの作成、cdktn の `cicdTrigger.branches` の変更、GitHub のブランチ保護と既定のブランチ | 決定済み・未着手 |
-| API-16 | P2 | リリースを安全にする改善（§7.6）: ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness | 提案中（要承認） |
+| API-14 | P1 | ローカルの `main` が `origin/main` より 1 コミット先行（feature ブランチと同じ未リリースのコミット）。§7 の運用では main はリリース済みのコードだけなので、`origin/main` に戻す（ローカルのみの操作。要承認） | 完了（2026-10-17） |
+| API-15 | P1 | ブランチ運用への移行（§7.5）: `dev`・`staging`・`prod` ブランチの作成、cdktn の `cicdTrigger.branches` の変更、GitHub のブランチ保護と既定のブランチ | #1・#2・#4・#5 完了（2026-10-17。#2 は cdktn `0680628` で push 済み、deploy は次回の dev 構築時）。**#3（ブランチ保護・既定のブランチ）はユーザーが GitHub の画面で設定** |
+| API-16 | P2 | リリースを安全にする改善（§7.6）: ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness | #1〜#3 実装済み（2026-10-17、未コミット）。#2: `APP_VERSION`（CI がコミットを渡す）を `/`・`/healthz`・`/readyz` が返す。#3: `migrations/0004_migration_status.sql` の `ops.missing_migrations(text[])`（SECURITY DEFINER、`api-role-setup.sh` で EXECUTE を付与）と `src/migrations.ts` |
 
 ## 4. スクリプトの実行場所（API-01、API-07）
 
@@ -126,12 +126,12 @@ cdktn はシークレットの入れ物とダミー値（`CHANGE_ME`）だけを
 | `main` | prod にリリースし、確認が済んだコードの保管。リリースの履歴（必要ならタグ `vX.Y.Z` を付ける） | 起動しない |
 
 - 環境は FEAT-04 のとおり別々のクラウドアカウント。各環境の CI/CD は、その環境のブランチだけを監視する（cdktn の `cicdTrigger.branches` を `byEnv({ dev: ["dev"], stg: ["staging"], prod: ["prod"] })` にする）。
-- 昇格（`dev` → `staging` → `prod` → `main`）は **fast-forward のみ**。stg で確認したものと同じコミットが prod と main に入る。
+- 昇格（`dev` → `staging` → `prod` → `main`）は **PR とマージコミット**（2026-10-17 変更。当初は fast-forward のみだったが、GitHub の PR は fast-forward でマージできず、全ブランチ PR 必須を優先した）。stg で確認したものと同じ内容（コミットは別）が prod と main に入る。`/healthz` の版は環境ごとに異なる
 
 ### 7.2 通常のリリースの流れ
 
 ```
-feature/* ──PR──▶ dev ──ff──▶ staging ──ff──▶ prod ──ff──▶ main
+feature/* ──PR──▶ dev ──PR──▶ staging ──PR──▶ prod ──PR──▶ main
                    │             │             │
               dev 環境       stg 環境       prod 環境      （保管のみ）
 ```
@@ -142,7 +142,7 @@ feature/* ──PR──▶ dev ──ff──▶ staging ──ff──▶ prod
 2. **ブランチを進める**（PR でマージ）→ その環境の3クラウドでビルド・デプロイ。
 3. **確認**: 3クラウドの `/readyz`、同じ版が動いていること（API-16 の版の確認）、プライマリ以外のクラウドからの書き込み。
 4. 一部のクラウドだけ失敗したら、そのクラウドのビルドを再実行する（マイグレーションは追加のみなので、混在中も動く）。
-5. prod の確認が済んだら `prod` を `main` に fast-forward する。
+5. prod の確認が済んだら `prod` から `main` への PR をマージする。
 
 列・テーブルの削除は、それを使わない版を全環境に出した**次のリリース**で、手書きのマイグレーションとして行う（`docs/models.md`）。
 
@@ -154,18 +154,18 @@ feature/* ──PR──▶ dev ──ff──▶ staging ──ff──▶ prod
 ### 7.4 緊急の修正（hotfix）
 
 ```
-prod ──▶ hotfix/* ──PR──▶ prod ──ff──▶ main
+prod ──▶ hotfix/* ──PR──▶ prod ──PR──▶ main
                             └──merge──▶ staging, dev（取り込み）
 ```
 
 - `prod` から `hotfix/*` を作り、PR で `prod` にマージする（必要なら先に stg で確認: `staging` にもマージして確認してから `prod`）。
-- その後、修正を `staging` と `dev` に取り込む（マージ）。これで次の通常の昇格が fast-forward で進められる状態に戻る。
+- その後、PR で `prod` を `staging` に、`staging` を `dev` にマージし、次の昇格で修正が失われないようにする。
 
 ### 7.5 移行の手順（API-15。各手順は実施前に承認を得る）
 
 1. GitHub に `dev`・`staging`・`prod` ブランチを作る（起点はリリース済みの `origin/main`）。
 2. cdktn: `cicdTrigger.branches` を環境ごとに変更し、dev 環境に deploy する（インフラの変更）。これ以降 `main` への push はデプロイを起動しない。順番を逆にすると、移行の途中で `main` への push が dev 環境のデプロイを起動するので、cdktn の変更を先に行うか、その間 `main` に push しない。
-3. GitHub のブランチ保護: `dev`・`staging`・`prod`・`main` は PR 必須・直接 push 禁止。`staging`・`prod`・`main` は fast-forward（リニアな履歴）のみ。既定のブランチは PR の向き先になる `dev` にする。
+3. GitHub のブランチ保護: `dev`・`staging`・`prod`・`main` は PR 必須・直接 push 禁止。既定のブランチは PR の向き先になる `dev` にする。**実施（2026-10-17）**: 無料プランの非公開リポジトリではルールセットが使えないため、リポジトリを公開して設定した。`staging`・`prod`・`main` はマージ方法をマージコミットのみに制限（fast-forward の昇格は PR 必須と両立しないため、§7.1 を変更）
 4. ローカルの `main` を `origin/main` に戻す（API-14）。
 5. ドキュメント: `README`・`docs/getting-started`・`docs/operations`（英語・日本語）にリリース手順を書く。cdktn の FEAT-04 §7.2 #6 と FEAT-01 §12.4 にも反映する（別リポジトリ。変更前に確認）。
 
@@ -173,35 +173,38 @@ prod ──▶ hotfix/* ──PR──▶ prod ──ff──▶ main
 
 | # | 内容 | 効果 |
 |---|---|---|
-| 1 | `Dockerfile` のビルド段階で `npm test` と `npm run generate -- --check` を実行し、失敗したらビルドを止める | 3クラウドすべてで、テストを通らない版がデプロイされない。新しいサービスは不要 |
+| 1 | `Dockerfile` のビルド段階で `npm test` を実行し、失敗したらビルドを止める（**実装済み 2026-10-17**。`generate --check` と同じ確認はテスト「repository models」が行うので別に実行しない。`.dockerignore` から `__tests__` を外し、`migrations/models.snapshot.json` だけ例外で含める。最終イメージの中身は変わらない） | 3クラウドすべてで、テストを通らない版がデプロイされない。新しいサービスは不要 |
 | 2 | ビルド時にコミット SHA を埋め込み、`/healthz` で返す | 3クラウドで同じ版が動いているかを確認できる |
 | 3 | `/readyz` で、アプリに含まれるマイグレーションが DB に適用済みか（`ops.schema_migrations`）も確認する | DB の更新を忘れても新しい版は準備完了にならず、ECS の Blue/Green・Cloud Run・Container Apps がトラフィックを切り替えない（古い版が動き続ける） |
 
-## 8. 再開時にやること（2026-10-12 時点）
+## 8. 再開時にやること（2026-10-17 更新）
 
 ### 8.1 現在の状態
 
 | 対象 | 状態 |
 |---|---|
-| アプリのコード | フェーズ 0a〜2 を `feature/primary-writes-and-models` に push 済み（`31bb879`）。テスト 98 件成功 |
-| このファイル | **未コミット**（`feature/primary-writes-and-models` の作業ツリーにある） |
-| ローカルの `main` | `origin/main`（`c1c2420`）より 1 コミット先行（`31bb879`）。push しないこと（API-14） |
-| GitHub | `main`（`c1c2420`）と `feature/primary-writes-and-models` のみ。`dev`・`staging`・`prod` は未作成 |
-| CI/CD | cdktn の `cicdTrigger.branches` は全環境 `main` のまま。**`main` に push すると dev 環境のデプロイが起動する** |
-| クラウド | 構築済みは dev 環境のみ（FEAT-04）。DB のセットアップ（API-01）、新しい環境変数（API-02）は未実施 |
-| ローカルの compose 環境 | 3 ノードで起動中（プライマリは google、世代 2）。不要なら `docker compose down -v` |
+| アプリのコード | フェーズ 0a〜2 とこのファイルを `feature/primary-writes-and-models` に push 済み（`7d2001f`） |
+| リポジトリ | **公開**（2026-10-17）。公開前に全履歴の作成者のメールを GitHub の noreply に書き換えて強制 push（内容は同一、コミット ID が変わった: `c1c2420` → `cfe7426`、`997859f` → `7d2001f`）。このリポジトリの git の `user.email` は noreply。他の clone は取り直しが必要 |
+| このファイル | 2026-10-17 の更新は未コミット |
+| API-16 #1〜#3、API-15 #5 | **未コミット**（feature ブランチの作業ツリー）。テスト 103 件成功。ローカルの `docker build`（テスト失敗でビルドが止まることも）と compose（マイグレーション未適用で `/readyz` が 503、`migrate.sh` 後に 200、別クラウドからの書き込み）で確認済み |
+| ローカルの `main` | `origin/main`（`cfe7426`）に合わせた（2026-10-17） |
+| GitHub | `dev`・`staging`・`prod` を `origin/main` から作成済み。既定のブランチは `dev`。ルールセット: 全 4 ブランチで PR 必須・強制 push と削除の禁止、`staging`・`prod`・`main` はマージコミットのみ（2026-10-17） |
+| CI/CD | cdktn の `config/cicd.ts` を dev `dev`・stg `staging`・prod `prod` に変更済み（2026-10-17、関連ドキュメント・FEAT-04 も更新、**cdktn 側は未コミット・未 deploy**）。dev 環境は destroy 済みのため、今は `main` に push してもデプロイは起動しない。次の構築時から新しいトリガーになる |
+| クラウド | **dev 環境も destroy 済み**（FEAT-04 §7.2.1、cdktn の state のリソース数 0 を 2026-10-17 に確認）。cdktn の作業ツリーにはユーザーの未コミット変更（`commonsettings.ts` で3クラウドの `dbs: true`）があり、次の deploy では DB も作成される。DB のセットアップ（API-01）、新しい環境変数（API-02）は未実施 |
+| ローカルの compose 環境 | 3 ノードで起動中（プライマリは aws、検証用。不要なら `docker compose down -v`） |
 | その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい）。PoC のスクリプトはリポジトリ外（作業用の一時ディレクトリ） |
 
 ### 8.2 ユーザーの回答待ち
 
 | # | 内容 | 関連 |
 |---|---|---|
-| 1 | ブランチ運用への移行の作業（§7.5 の 1〜5）を進めてよいか。一部だけならどれか | API-14、API-15 |
-| 2 | リリースを安全にする改善（§7.6 の 1〜3）を実施してよいか | API-16 |
-| 3 | このファイルをコミットして feature ブランチに push してよいか | — |
-| 4 | シークレットの管理方式（§5 の A〜D） | API-08、API-02 |
+| 1 | ~~ブランチ運用への移行（§7.5）~~ #3 のみユーザーの作業として残る | API-14、API-15 |
+| 2 | ~~リリースを安全にする改善（§7.6）~~ 実装済み | API-16 |
+| 3 | ~~このファイルのコミットと push~~ 済み | — |
+| 7 | 今回の変更のコミット（アプリ: feature ブランチ、cdktn: FEAT-01 §12.4 の追記） | — |
+| 4 | ~~シークレットの管理方式~~ 決定（A'） | API-08、API-02 |
 | 5 | `journal-prune.sh` の定期実行の方法（§4.3 の A〜C） | API-07 |
-| 6 | DB の接続数への対策（インフラ側） | API-06 |
+| 6 | ~~DB の接続数への対策~~ 決定・実装済み（1＋2） | API-06 |
 
 ### 8.3 作業の順番（案）
 

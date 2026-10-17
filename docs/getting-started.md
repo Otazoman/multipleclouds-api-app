@@ -98,8 +98,10 @@ only where a node differs (e.g. `DB_<NODE>_SSLMODE`).
 
 ## 5. Deploy
 
-Push to the branch that the pipelines watch. Each cloud builds the image and
-rolls out a new revision:
+Each environment deploys its own branch: `dev`, `staging` or `prod`
+([operations.md](operations.md#releases)). Merge into the environment's
+branch; each cloud builds the image (the build runs the tests) and rolls out
+a new revision:
 
 - AWS: CodeBuild → ECR → ECS Blue/Green (the build fails if the service
   does not become stable)
@@ -111,8 +113,8 @@ rolls out a new revision:
 For each cloud's endpoint:
 
 ```bash
-curl https://<endpoint>/healthz   # {"status":"ok","cloud":"<cloud>"}
-curl https://<endpoint>/readyz    # 200 when the database answers
+curl https://<endpoint>/healthz   # {"status":"ok","cloud":"<cloud>","version":"<commit>"}
+curl https://<endpoint>/readyz    # 200 when the database answers and is migrated
 ```
 
 Then create an item on one cloud and read it from another, as in the
@@ -121,8 +123,9 @@ A write through an API in a cloud other than the primary's checks the
 cross-cloud path: `PRIMARY_UNAVAILABLE` there usually means its container
 cannot reach the primary's database (routes, firewall / security group /
 NSG, private DNS). `readyz` returning `503` usually means the API cannot
-reach or log in to its database: check `DB_*` and that
-`scripts/api-role-setup.sh` has run on that node.
+reach or log in to its database, or that a migration is missing there (the
+API log names it): check `DB_*` and that `scripts/migrate.sh` and
+`scripts/api-role-setup.sh` have run on that node.
 
 After the first deployment, schedule `scripts/journal-prune.sh` (e.g.
 daily) on the scripts host: see [operations.md](operations.md#write-journal).
