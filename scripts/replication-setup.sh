@@ -30,9 +30,14 @@ require_psql_major 15 # \getenv
 
 PUBLICATION=mc_pub
 read -r -a nodes <<< "$NODES"
-if (( ${#nodes[@]} < 2 )); then
-  echo "NODES must list at least two nodes" >&2
+if (( ${#nodes[@]} == 0 )); then
+  echo "NODES must list the nodes" >&2
   exit 1
+fi
+if (( ${#nodes[@]} == 1 )); then
+  # A node that runs alone (no other clouds) has nothing to replicate.
+  echo "One node (${nodes[0]}): nothing to replicate"
+  exit 0
 fi
 
 # Quotes a value for a libpq connection string.

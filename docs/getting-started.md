@@ -7,10 +7,23 @@ environment and local testing, see the [README](../README.md).
 
 ## 1. Prerequisites
 
+The APIs run in one of two ways (set in the infrastructure repository,
+`apiContainerConfig.topology`):
+
+- **Cluster** (two or three clouds): the clouds share one set of data. Every
+  API reads from its own cloud's database and writes to the primary, and the
+  databases replicate. Needs the VPN and the private DNS between the clouds.
+- **Clouds alone** (`independent`, or a database on one cloud only): each
+  cloud's API uses only its own database and has its own data. No VPN or
+  private DNS. Useful to try a cloud on its own; turning such clouds into a
+  cluster later keeps the data of one of them only (the others are reset
+  and copied from it: [operations.md](operations.md#adding-a-removed-node-back)).
+
 The infrastructure repository (`cdktn_multicloud_backend`) must have
 created, for every participating cloud:
 
-- the network and the site-to-site VPN between the clouds, with private DNS
+- the network and, for a cluster, the site-to-site VPN between the clouds,
+  with private DNS
 - a PostgreSQL 18 database with logical replication enabled
   (`rds.logical_replication`, `cloudsql.logical_decoding`, or
   `wal_level = logical` on Azure)
@@ -18,9 +31,10 @@ created, for every participating cloud:
 - the CI/CD pipeline that builds this repository (`buildspec.yml`,
   `cloudbuild.yaml`, `azure-pipelines.yml`)
 - secrets for the database passwords in the cloud's secret store
-- network access on port 5432 from **each cloud's containers to every
-  cloud's database** (writes go to the primary, which can be on any cloud),
-  in addition to database-to-database access for replication
+- for a cluster, network access on port 5432 from **each cloud's
+  containers to every cloud's database** (writes go to the primary, which
+  can be on any cloud), in addition to database-to-database access for
+  replication
 
 You also need a host to run the database scripts:
 
@@ -93,6 +107,12 @@ the same rows must sort the same everywhere. It creates the database with
 PostgreSQL's builtin `C.UTF-8` locale (`DB_CREATE_OPTIONS` in
 `replication/nodes.env` changes it). The infrastructure does not create
 this database.
+
+**A cloud alone** is a cluster of one node: on that cloud's host, set
+`NODES` to that cloud only (in `replication/nodes.env`, or
+`NODES=<cloud> scripts/...`) and run the same scripts with
+`scripts/switchover.sh <cloud>`; `replication-setup.sh` has nothing to do
+and says so. Repeat on each cloud that runs alone.
 
 In the status output, every node should show the same primary and epoch,
 every subscription should be enabled, every slot active, and the error
