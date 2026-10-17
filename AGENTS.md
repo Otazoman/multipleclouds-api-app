@@ -90,6 +90,10 @@ silently diverge the databases.
   (`ops.wait_for_peers`). Never write through the local pool or bypass
   these checks.
 - Only `scripts/switchover.sh` changes `ops.cluster_state`.
+- Exception: journal pruning (`src/prune.ts`, `scripts/journal-prune.sh`)
+  deletes old `app.write_journal` rows directly, as maintenance: not through
+  `PrimaryWriter` and not journaled, but only on the primary, checked with
+  `ops.assert_primary` in every transaction.
 - Every write records itself in `app.write_journal` through
   `PrimaryWriter` (`WriteMeta`: operation, arguments, idempotency key,
   `revive` for the stored result). New mutations must pass a `WriteMeta`
@@ -122,6 +126,7 @@ silently diverge the databases.
 | `src/config.ts` | Environment variables (validated at startup) |
 | `src/server.ts` | HTTP server: health endpoints and `/graphql` |
 | `src/cluster.ts` | Write routing: primary lookup, write transactions, commit confirmation |
+| `src/prune.ts` | Journal pruning job (`node dist/prune.js`), scheduled by the infrastructure |
 | `src/migrations.ts` | Readiness: are this image's migrations applied to this cloud's database |
 | `models/*.yaml` | Model definitions (tables and the GraphQL API); see `docs/models.md` |
 | `src/models/` | Loading / validating models; DDL and snapshot diff |

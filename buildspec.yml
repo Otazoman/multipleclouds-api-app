@@ -1,6 +1,8 @@
 # AWS CodeBuild: build the image, push it to ECR and deploy it to ECS.
 # ECS performs the Blue/Green switch (the service's deployment strategy is
-# BLUE_GREEN, set by the infrastructure repository).
+# BLUE_GREEN, set by the infrastructure repository). The journal pruning job
+# (EventBridge Scheduler) runs the latest revision of the same family, so it
+# needs no step here.
 #
 # Environment variables set on the CodeBuild project (infrastructure repository):
 #   REPOSITORY_URI  ECR repository URI (<account>.dkr.ecr.<region>.amazonaws.com/<name>)

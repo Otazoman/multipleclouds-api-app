@@ -109,6 +109,7 @@ docker compose up -d --build
 Run in this order (each script is safe to run again):
 
 ```bash
+docker compose run --rm tools scripts/database-create.sh     # database appdb on every node
 docker compose run --rm tools scripts/migrate.sh             # tables and functions on every node
 docker compose run --rm tools scripts/api-role-setup.sh      # role the API connects as
 docker compose run --rm tools scripts/replication-setup.sh   # bidirectional replication
@@ -231,6 +232,7 @@ from each cloud's secret store.
 | `WRITE_ACK_PEERS`  | Other nodes that must confirm a write (default `1`; `0` without peers) |
 | `WRITE_ACK_TIMEOUT_MS` | Wait for the confirmation (default `3000`)      |
 | `PRIMARY_REFRESH_INTERVAL_MS` | How often the primary is looked up (default `5000`) |
+| `JOURNAL_RETENTION_DAYS` | Journal pruning job (`node dist/prune.js`) only: days the write journal keeps a write and its idempotency key (default `30`) |
 
 ## Errors
 

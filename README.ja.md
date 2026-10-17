@@ -106,6 +106,7 @@ docker compose up -d --build
 次の順に実行します（どのスクリプトも再実行して問題ありません）：
 
 ```bash
+docker compose run --rm tools scripts/database-create.sh     # 全ノードにデータベース appdb を作成
 docker compose run --rm tools scripts/migrate.sh             # 全ノードにテーブルと関数を作成
 docker compose run --rm tools scripts/api-role-setup.sh      # API が接続するロールを作成
 docker compose run --rm tools scripts/replication-setup.sh   # 双方向レプリケーションを設定
@@ -225,6 +226,7 @@ API は環境変数から設定を読みます（`src/config.ts`）。[.env.samp
 | `WRITE_ACK_PEERS`  | 書き込みを確認する必要がある他ノードの数（既定 `1`。他ノードがなければ `0`） |
 | `WRITE_ACK_TIMEOUT_MS` | 確認を待つ時間（既定 `3000`）                   |
 | `PRIMARY_REFRESH_INTERVAL_MS` | プライマリを確認する間隔（既定 `5000`）  |
+| `JOURNAL_RETENTION_DAYS` | ジャーナルの削除ジョブ（`node dist/prune.js`）のみ：書き込みと冪等キーを保持する日数（既定 `30`） |
 
 ## エラー
 

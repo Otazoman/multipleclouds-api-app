@@ -1,16 +1,16 @@
 # Local active/active environment: three PostgreSQL nodes standing in for
-# the clouds and one API per node. See docs/getting-started.md.
+# the clouds and one API per node. The database appdb is created by
+# scripts/database-create.sh, as on the clouds. See docs/getting-started.md.
 # The passwords are for these throwaway local containers only.
 
 x-postgres: &postgres
   image: postgres:18
   command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
   environment:
-    POSTGRES_DB: appdb
     POSTGRES_USER: admin
     POSTGRES_PASSWORD: ${LOCAL_ADMIN_PASSWORD:-local-admin}
   healthcheck:
-    test: ["CMD-SHELL", "pg_isready -U admin -d appdb"]
+    test: ["CMD-SHELL", "pg_isready -U admin -d postgres"]
     interval: 2s
     retries: 30
 

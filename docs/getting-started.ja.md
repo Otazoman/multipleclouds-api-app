@@ -71,12 +71,18 @@ VM から CLI で設定します（Azure Key Vault には Azure の VNet から�
 次の順に実行します。どのスクリプトも再実行して問題ありません。
 
 ```bash
+scripts/database-create.sh     # 全ノードにデータベース（DB_NAME）を作成
 scripts/migrate.sh             # 全ノードにテーブルを作成
 scripts/api-role-setup.sh      # app_api を作成し、スキーマ "app" へのアクセスを付与
 scripts/replication-setup.sh   # 全ノードの組み合わせでパブリケーションとサブスクリプションを作成
 scripts/switchover.sh <node>   # 最初のプライマリ（例：利用者が最も多い地域に近いクラウド）
 scripts/replication-status.sh  # 確認
 ```
+
+`database-create.sh` は各ノードのデータベースの照合順序を表示し、異なると失敗します。読み取りは各クラウドの
+データベースから行うため、同じ行がどこでも同じ順に並ぶ必要があるからです。データベースは PostgreSQL の
+組み込みロケール `C.UTF-8` で作ります（`replication/nodes.env` の `DB_CREATE_OPTIONS` で変更できます）。
+このデータベースはインフラでは作りません。
 
 状態確認の出力で、すべてのノードのプライマリと世代番号が同じ、すべてのサブスクリプションが有効、
 すべてのスロットが active、エラー件数が `0` であることを確認します。サブスクリプションが接続できない場合は、VPN、ポート 5432 の

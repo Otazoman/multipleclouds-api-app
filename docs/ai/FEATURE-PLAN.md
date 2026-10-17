@@ -40,13 +40,13 @@
 
 | ID | 優先度 | 内容 | 状態 |
 |---|---|---|---|
-| API-01 | P1 | クラウドでの初回 DB セットアップ（`migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`）。実行場所は §4 | 未着手（dev 環境の構築待ち） |
-| API-02 | P1 | cdktn: 各 API コンテナの環境変数とシークレット参照（§5.2） | **実装済み（2026-10-17、未コミット・未 deploy）**: cdktn の `config/apicontainer.ts` ほか（FEAT-01 §9 #5）。アプリの `buildspec.yml` は `TASK_FAMILY` の最新リビジョンを元にする。deploy 時に確認すること: Container Apps がプライベートエンドポイントだけの Key Vault のシークレットを読めるか、Cloud Run の startup probe の時間 |
+| API-01 | P1 | クラウドでの初回 DB セットアップ（`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`）。実行場所は §4 | 未着手（dev 環境の構築待ち） |
+| API-02 | P1 | cdktn: 各 API コンテナの環境変数とシークレット参照（§5.2） | **実装済み（2026-10-17、未 deploy）**: cdktn の `config/apicontainer.ts` ほか（FEAT-01 §9 #5）。アプリの `buildspec.yml` は `TASK_FAMILY` の最新リビジョンを元にする。deploy 時に確認すること: Container Apps がプライベートエンドポイントだけの Key Vault のシークレットを読めるか、Cloud Run の startup probe の時間 |
 | API-03 | P1 | クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認 | 未着手 |
-| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手 |
+| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `CREATE DATABASE` と組み込みロケール（`LOCALE_PROVIDER builtin`）を使えるか（Aurora・Cloud SQL・Azure。使えなければ `DB_CREATE_OPTIONS` で3クラウド共通の照合順序を指定）、管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手 |
 | API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整。API-06 の想定（書き込み毎秒 700〜800 件が上限の目安）の確認 | 未着手 |
 | API-06 | P2 | DB の接続数（最大約 220 で `max_connections = 100` を超え得た） | **完了**（§6） |
-| API-07 | P2 | `journal-prune.sh` の定期実行の方法（§4.3） | **決定（2026-10-17）: C. マネージドのジョブ**（ECS Scheduled Task / Cloud Run Jobs + Cloud Scheduler / Container Apps Jobs）。設計は未着手（§4.3 の課題: ジョブのイメージの更新を CI/CD に追加、`psql` のないイメージでの実行方法） |
+| API-07 | P2 | 変更履歴の削除の定期実行（§4.3） | **実装済み（2026-10-17、未 deploy）: C. マネージドのジョブ**。アプリ: `src/prune.ts`（`node dist/prune.js`、`JOURNAL_RETENTION_DAYS`）、`cloudbuild.yaml`・`azure-pipelines.yml` でジョブのイメージを更新。cdktn: `apiContainerConfig.journalPrune`（既定 `false`。API のデプロイ後に `true`）で EventBridge Scheduler＋ECS、Cloud Scheduler＋Cloud Run ジョブ、Container Apps ジョブ。ローカルで別ノードから実行し、プライマリで削除され全ノードに反映されることを確認 |
 | API-08 | P2 | シークレットの管理方式 | **決定**（A'、§5）。実装は API-02 |
 | API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え（Azure 障害時に AWS / Google の VM から実行する手順を含む: §4.2）、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更、`docs/operations.md` のリリース手順 | 未着手 |
 | API-10 | P3 | フェーズ 3: MySQL 対応。まず3クラウドのマネージド MySQL で、レプリケーションの複製元を付け替えられるか（どのクラウドもプライマリになれるか）を PoC で確認。成り立つ場合のみ、DB 依存部分（確認待ち・切り替え・SQL の方言・DDL 生成）をアダプターに分離して実装 | 未着手 |
@@ -56,8 +56,8 @@
 | API-14 | — | ローカルの `main` を `origin/main` に戻す | **完了**（2026-10-17） |
 | API-15 | — | ブランチ運用への移行（`dev`・`staging`・`prod` の作成、cdktn の `cicdTrigger.branches`、ブランチ保護、既定のブランチ、ドキュメント） | **完了**（2026-10-17。cdktn のトリガーは次の構築時に反映: §7） |
 | API-16 | — | リリースを安全にする改善（ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness） | **完了**（2026-10-17、§1） |
-| API-18 | P1 | アプリ用のデータベース `appdb` がクラウドで作られない。cdktn は Google に `postgres_db` を作り、AWS・Azure には作らない。アプリのスクリプトと API は全ノードで同じ `DB_NAME` を使う前提 | 未決定（cdktn で3クラウドに作るか、API-01 の手順で `CREATE DATABASE` するか） |
-| API-17 | P1 | `docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる | **完了（2026-10-17、未コミット）**。`docs/operations.md` のパスワードの変更手順も更新 |
+| API-18 | P1 | アプリ用のデータベース `appdb` がクラウドで作られない | **実装済み（2026-10-17）: b 案**。`scripts/database-create.sh`（無ければ作成、全ノードの照合順序を比較し異なれば失敗。既定は組み込みロケール `C.UTF-8`、`DB_CREATE_OPTIONS` で変更可）。compose もスクリプトで作る形に変更。API-01 の最初に実行する |
+| API-17 | P1 | `docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる | **完了（2026-10-17）**。`docs/operations.md` のパスワードの変更手順も更新 |
 
 ## 4. スクリプトの実行場所（API-01、API-07）
 
@@ -154,8 +154,8 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | 対象 | 状態 |
 |---|---|
-| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`f54c6e3`）に全実装を push 済み。2026-10-17 の追加（このファイル、operations のリリース手順、README、`buildspec.yml`、getting-started・operations のシークレット）は未コミット。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
-| cdktn のリポジトリ | 非公開。`main`（`6508539`）。**未コミット**: API-02 の実装、ログのテストの修正（バケット名を設定から求める）、古いスナップショットのテスト `app-test.ts` の削除（README の注記も）。jest は 190 件すべて成功 |
+| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`836f4c3`）に push 済み。API-07・API-18 を含め push 済み（2026-10-17）。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
+| cdktn のリポジトリ | 非公開。`main`（`95c781c`、API-02 とテストの修正を含む）。API-07 のジョブ、Aurora への変更、RDS の無効化も push 済み（2026-10-17）。jest は 194 件すべて成功 |
 | クラウド | **全環境とも未構築**（dev は 2026-10-12 に destroy、state のリソース数 0）。次の dev の deploy では VM・DB・コンテナ・CI/CD が作られる（課金あり） |
 | ローカルの compose 環境 | 3 ノードで起動中（プライマリは aws、検証用のデータあり）。不要なら `docker compose down -v` |
 | その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい） |
@@ -164,18 +164,19 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | # | 作業 | 場所 | 承認・判断 | 関連 |
 |---|---|---|---|---|
-| 1 | ~~API コンテナの環境変数とシークレット参照~~ 実装済み（未コミット） | cdktn | — | API-02 |
-| 2 | ~~getting-started のシークレットの手順~~ 完了（未コミット） | アプリ | — | API-17 |
-| 3 | ~~cdktn の失敗しているテスト~~ 修正済み（未コミット） | cdktn | — | — |
-| 3a | アプリ用のデータベース `appdb` の作り方を決めて実装 | cdktn または VM | ユーザーの判断 | API-18 |
+| 1 | ~~API コンテナの環境変数とシークレット参照~~ 実装済み | cdktn | — | API-02 |
+| 2 | ~~getting-started のシークレットの手順~~ 完了 | アプリ | — | API-17 |
+| 3 | ~~cdktn の失敗しているテスト~~ 修正済み | cdktn | — | — |
+| 3a | ~~アプリ用のデータベースの作り方~~ 実装済み（b 案） | アプリ | — | API-18 |
+| 3b | AWS は Aurora を使う（2026-10-17 決定。`config/apicontainer.ts` の AWS の接続先を `aurora-postgres.aws.inner` に変更済み）。cdktn の RDS インスタンス（`rds-postgres-instance`）は `build: false` にした（2026-10-17。RDS 用の CloudWatch のロググループ 2 つは空のまま残る） | cdktn | — | — |
 | 4 | dev 環境を構築（`cdktn diff` → `cdktn deploy`。`azureSecretReady`・`readinessProbe` は `false`）。Azure の DevOpsInfrastructure のオブジェクト ID（`.env.dev`）が設定済みか確認 | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
 | 5 | 作業用 VM からシークレットの値を入れる（`app_api` は 3 ストアに同じ値、`app_repl`）。その後 `azureSecretReady: true` で cdktn を deploy | VM・cdktn | — | API-08 |
 | 6 | コンテナから他クラウドの DB への接続と、マネージド DB の権限を確認 | VM・クラウド | クラウドの DB への実行の承認 | API-03、API-04 |
-| 7 | DB の初回セットアップ（`migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`） | VM | クラウドの DB への実行の承認 | API-01 |
+| 7 | DB の初回セットアップ（`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`） | VM | クラウドの DB への実行の承認 | API-01 |
 | 8 | 最初のリリース（その後 `readinessProbe: true` で cdktn を deploy）: feature ブランチを PR で `dev` にマージし、3クラウドで `/healthz`（同じ版）・`/readyz`・ログ（`Primary: <node> (epoch N)`）・プライマリ以外からの書き込みを確認（`docs/operations.md` のリリース手順の初回の実施） | GitHub・クラウド | マージの承認 | §2 |
 | 9 | RTT と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` と接続数の想定を確認 | dev | — | API-05、API-06 |
 | 10 | 運用手順のリハーサル（切り替え、強制切り替え、旧プライマリの復帰、パスワード変更、Azure 障害時の手順） | dev | クラウドの DB への実行の承認 | API-09 |
-| 11 | `journal-prune.sh` の定期実行をマネージドのジョブ（C）で設計・実装 | アプリ・cdktn | 設計の承認 | API-07 |
+| 11 | ~~変更履歴の削除のジョブ~~ 実装済み。最初のリリースの後に `journalPrune.enabled: true` で cdktn を deploy し、3クラウドで実行を確認する。deploy 時に確認すること: EventBridge Scheduler がリビジョンなしのタスク定義 ARN で最新を実行するか、`roles/run.invoker` でジョブを実行できるか、Cloud Scheduler API の有効化 | cdktn・クラウド | deploy の承認 | API-07 |
 | 12 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |
 | 13 | P3 の課題 | アプリ | 実施の判断 | API-10〜13 |
 
@@ -183,6 +184,4 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | # | 内容 | 関連 |
 |---|---|---|
-| 1 | 未コミットの変更のコミット（アプリ: feature ブランチ、cdktn: `main`） | — |
-| 2 | アプリ用のデータベース `appdb` の作り方 | API-18 |
-| 3 | API-07（マネージドのジョブ）の設計に着手してよいか | API-07 |
+| 1 | 次の作業（§8.2 の 4: dev 環境の構築）に進む時期。課金を伴う | — |

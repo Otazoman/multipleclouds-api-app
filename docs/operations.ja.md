@@ -323,22 +323,31 @@ scripts/switchover.sh <現在のプライマリ>
 
 ## 変更履歴（ジャーナル）
 
-`app.write_journal` は書き込み1件につき1行ずつ増えます。古い行を定期的に削除してください
-（例：スクリプト用ホストで毎日実行するジョブ）：
+`app.write_journal` は書き込み1件につき1行ずつ増え、各書き込みの引数と結果を保存します。スケジュール実行の
+ジョブが毎日、`JOURNAL_RETENTION_DAYS`（既定 30）日より古い行を削除します。API のイメージの
+`node dist/prune.js` を API と同じ設定で実行します（`src/prune.ts`）。インフラのリポジトリが、データベースの
+あるすべてのクラウドに作ります（`apiContainerConfig.journalPrune`）：EventBridge Scheduler と ECS のタスク、
+Cloud Scheduler と Cloud Run のジョブ、Container Apps のジョブ。CI/CD がジョブのイメージを API と同じに
+保ちます。削除するのはプライマリだけなので（削除は他ノードに複製されます）、他のクラウドでの実行は何もせずに
+終わり、あるクラウドが止まっていても削除は続きます。実行結果は各クラウドのコンソールで確認します（実行履歴と
+ログの `Deleted N journal rows ...`）。
+
+手動で削除する場合（ジョブがまだない場合など）は、スクリプト用ホストから実行します：
 
 ```bash
 DAYS=30 scripts/journal-prune.sh
 ```
 
-削除はプライマリでのみ実行されます（削除は他ノードに複製されます）。`DAYS` は冪等キーの有効期間でもあります。
-クライアントが再送する可能性のある期間より長くしてください。
+保持期間は冪等キーの有効期間でもあります。クライアントが再送する可能性のある期間より長くしてください。
 
 ## ノードの追加
 
 1. `replication/nodes.env` の `NODES` にノードを追加し、`NODE_<N>_*` を設定します。
-2. 新しいノードにマイグレーションを適用し、API ロールを作成します：
+2. 新しいノードにデータベースを作り、マイグレーションを適用し、API ロールを作成します
+   （`database-create.sh` は照合順序が他のノードと同じかも確認します）：
 
    ```bash
+   scripts/database-create.sh <new>
    scripts/migrate.sh <new>
    scripts/api-role-setup.sh <new>
    ```

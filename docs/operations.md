@@ -369,23 +369,37 @@ The APIs are not misled meanwhile: they use the highest epoch they can see.
 
 ## Write journal
 
-`app.write_journal` grows by one row per write. Delete old rows regularly
-(e.g. a daily scheduled job on the scripts host):
+`app.write_journal` grows by one row per write, and keeps each write's
+arguments and result. A scheduled job deletes the rows older than
+`JOURNAL_RETENTION_DAYS` (default 30) every day: `node dist/prune.js` in the
+API image, with the API's settings (`src/prune.ts`). The infrastructure
+repository creates it on every cloud with a database
+(`apiContainerConfig.journalPrune`): EventBridge Scheduler and an ECS task,
+Cloud Scheduler and a Cloud Run job, a Container Apps job. CI/CD keeps its
+image the same as the API's. Only the primary deletes (the deletions
+replicate), so the runs on the other clouds find nothing to do, and the
+pruning goes on while a cloud is down. Check the job runs in each cloud's
+console (execution history and logs: `Deleted N journal rows ...`).
+
+To prune by hand (e.g. before the jobs exist), from the scripts host:
 
 ```bash
 DAYS=30 scripts/journal-prune.sh
 ```
 
-It runs on the primary only (the deletions replicate). `DAYS` is also how
-long idempotency keys work: choose it longer than any client may retry.
+The retention is also how long idempotency keys work: choose it longer
+than any client may retry.
 
 ## Adding a node
 
 1. Add the node to `NODES` and its `NODE_<N>_*` settings in
    `replication/nodes.env`.
-2. Apply the migrations and create the API role on the new node:
+2. Create the database, apply the migrations and create the API role on
+   the new node (`database-create.sh` also checks that its collation matches
+   the other nodes):
 
    ```bash
+   scripts/database-create.sh <new>
    scripts/migrate.sh <new>
    scripts/api-role-setup.sh <new>
    ```

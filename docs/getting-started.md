@@ -79,12 +79,20 @@ VNet).
 Run in this order. Every script is safe to run again.
 
 ```bash
+scripts/database-create.sh     # create the database (DB_NAME) on every node
 scripts/migrate.sh             # create the tables on every node
 scripts/api-role-setup.sh      # create app_api and grant access to schema "app"
 scripts/replication-setup.sh   # publications and subscriptions between every pair
 scripts/switchover.sh <node>   # first primary, e.g. the cloud closest to most users
 scripts/replication-status.sh  # check
 ```
+
+`database-create.sh` prints the collation of the database on every node
+and fails when they differ: reads come from each cloud's own database, so
+the same rows must sort the same everywhere. It creates the database with
+PostgreSQL's builtin `C.UTF-8` locale (`DB_CREATE_OPTIONS` in
+`replication/nodes.env` changes it). The infrastructure does not create
+this database.
 
 In the status output, every node should show the same primary and epoch,
 every subscription should be enabled, every slot active, and the error

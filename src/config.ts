@@ -36,6 +36,11 @@ export interface AppConfig {
     /** How often the cluster state is read from the nodes. */
     primaryRefreshMs: number;
   };
+  /**
+   * Days the write journal keeps a write (and its idempotency key), for the
+   * journal pruning job (src/prune.ts).
+   */
+  journalRetentionDays: number;
 }
 
 const CLOUD_ID_PATTERN = /^[a-z][a-z0-9]*$/;
@@ -52,6 +57,7 @@ const DEFAULT_PEER_POOL_MAX = 3;
 const DEFAULT_ACK_PEERS = 1;
 const DEFAULT_ACK_TIMEOUT_MS = 3000;
 const DEFAULT_PRIMARY_REFRESH_MS = 5000;
+const DEFAULT_JOURNAL_RETENTION_DAYS = 30;
 
 type Env = Record<string, string | undefined>;
 
@@ -192,5 +198,10 @@ export const loadConfig = (env: Env = process.env): AppConfig => {
         DEFAULT_PRIMARY_REFRESH_MS,
       ),
     },
+    journalRetentionDays: integer(
+      env,
+      "JOURNAL_RETENTION_DAYS",
+      DEFAULT_JOURNAL_RETENTION_DAYS,
+    ),
   };
 };

@@ -11,6 +11,8 @@
 #   ACR_LOGIN_SERVER    registry login server (<name>.azurecr.io)
 #   RESOURCE_GROUP      resource group of the Container App
 #   CONTAINER_APP_NAME  Container App name
+#   PRUNE_JOB_NAME      Container Apps job running the same image (journal
+#                       pruning; not set: none)
 trigger: none # set on the pipeline (CI trigger override)
 pr: none
 
@@ -30,5 +32,9 @@ steps:
       docker push "$IMAGE"
       az containerapp update --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
         --image "$IMAGE" --only-show-errors --output none
+      if [ -n "${PRUNE_JOB_NAME:-}" ]; then
+        az containerapp job update --name "$PRUNE_JOB_NAME" --resource-group "$RESOURCE_GROUP" \
+          --image "$IMAGE" --only-show-errors --output none
+      fi
       echo "Deployed $IMAGE"
     displayName: Build, push and deploy
