@@ -157,8 +157,8 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | 対象 | 状態 |
 |---|---|
-| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`836f4c3`）に push 済み。API-07・API-18 を含め push 済み（2026-10-17）。API-19 のアプリ側（スクリプト、ドキュメント）は未コミット。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
-| cdktn のリポジトリ | 非公開。`main`（`95c781c`、API-02 とテストの修正を含む）。API-07 のジョブ、Aurora への変更、RDS の無効化も push 済み（2026-10-17）。API-19（topology）は未コミット。jest は 197 件すべて成功 |
+| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`836f4c3`）に push 済み。API-07・API-18 を含め push 済み（2026-10-17）。API-19 のアプリ側も push 済み。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
+| cdktn のリポジトリ | 非公開。`main`（`95c781c`、API-02 とテストの修正を含む）。API-07 のジョブ、Aurora への変更、RDS の無効化も push 済み（2026-10-17）。API-19（topology）も push 済み（`37a5ac6`）。jest は 197 件すべて成功 |
 | クラウド | **全環境とも未構築**（dev は 2026-10-12 に destroy、state のリソース数 0）。次の dev の deploy では VM・DB・コンテナ・CI/CD が作られる（課金あり） |
 | ローカルの compose 環境 | 3 ノードで起動中（プライマリは aws、検証用のデータあり）。不要なら `docker compose down -v` |
 | その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい） |
