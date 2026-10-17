@@ -58,6 +58,8 @@
 | API-15 | — | ブランチ運用への移行（`dev`・`staging`・`prod` の作成、cdktn の `cicdTrigger.branches`、ブランチ保護、既定のブランチ、ドキュメント） | **完了**（2026-10-17。cdktn のトリガーは次の構築時に反映: §7） |
 | API-16 | — | リリースを安全にする改善（ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness） | **完了**（2026-10-17、§1） |
 | API-19 | P1 | 1・2・3クラウドのどの構成でも API が動くようにする（VPN・DNS なしの単体クラウドを含む） | **実装済み（2026-10-17）**: cdktn の `topology`、`DB_HOST` は自クラウドの DB の元の接続先（Aurora のエンドポイント、Cloud SQL のプライベート IP、Azure の FQDN）、`DB_<NODE>_HOST` はプライベート DNS 名。アプリ: `replication-setup.sh` は1ノードなら何もせず正常終了、`nodes.env.sample` の `NODES` は環境変数を優先、getting-started に構成の説明。ローカルで1ノード・2ノードの動作を確認。deploy 時に確認すること: Container Apps から Azure の DB の FQDN を解決できるか |
+| API-20 | P2 | 監視と通知: 削除ジョブの失敗、レプリケーションの遅延・停止、スロットの WAL の蓄積を通知する（cdktn の FEAT-03 と合わせて設計。FEAT-01 §8 で「設計中」のまま） | 未着手（本番前までに） |
+| API-21 | — | 整理（2026-10-17 完了）: `pg_subscription` の参照を現在のデータベースに限定（`replication-setup.sh`・`replication-status.sh`・`switchover.sh`。ローカルで再実行・計画的な切り替え・強制切り替えを確認）、`architecture.md`（英・日）にクラスタと単体の説明、cdktn の Container Apps の仮の `DB_URL` を削除、使わない RDS のロググループの設定をコメントアウト、FEAT-01 §10・FEAT-04 §7.3 の古い項目を完了・取り消しに | **完了** |
 | API-18 | P1 | アプリ用のデータベース `appdb` がクラウドで作られない | **実装済み（2026-10-17）: b 案**。`scripts/database-create.sh`（無ければ作成、全ノードの照合順序を比較し異なれば失敗。既定は組み込みロケール `C.UTF-8`、`DB_CREATE_OPTIONS` で変更可）。compose もスクリプトで作る形に変更。API-01 の最初に実行する |
 | API-17 | P1 | `docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる | **完了（2026-10-17）**。`docs/operations.md` のパスワードの変更手順も更新 |
 
@@ -174,11 +176,11 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 3b | AWS は Aurora を使う（2026-10-17 決定。`config/apicontainer.ts` の AWS の接続先を `aurora-postgres.aws.inner` に変更済み）。cdktn の RDS インスタンス（`rds-postgres-instance`）は `build: false` にした（2026-10-17。RDS 用の CloudWatch のロググループ 2 つは空のまま残る） | cdktn | — | — |
 | 4 | dev 環境を構築（`cdktn diff` → `cdktn deploy`。`topology` は `independent`、`useVpn`・`hostZones` は無効のまま、`azureSecretReady`・`readinessProbe` は `false`）。Azure の DevOpsInfrastructure のオブジェクト ID（`.env.dev`）が設定済みか確認 | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
 | 5 | 作業用 VM からシークレットの値を入れる（`app_api` は 3 ストアに同じ値、`app_repl`）。その後 `azureSecretReady: true` で cdktn を deploy | VM・cdktn | — | API-08 |
-| 6 | コンテナから他クラウドの DB への接続と、マネージド DB の権限を確認 | VM・クラウド | クラウドの DB への実行の承認 | API-03、API-04 |
+| 6 | マネージド DB の権限を確認（API-04）。他クラウドの DB への接続（API-03）は、クラスタにするとき（9a）に確認する | VM・クラウド | クラウドの DB への実行の承認 | API-03、API-04 |
 | 7 | DB の初回セットアップ（単体のクラウドごとに `NODES=<cloud>` で。`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`） | VM | クラウドの DB への実行の承認 | API-01 |
-| 8 | 最初のリリース（その後 `readinessProbe: true` で cdktn を deploy）: feature ブランチを PR で `dev` にマージし、3クラウドで `/healthz`（同じ版）・`/readyz`・ログ（`Primary: <node> (epoch N)`）・プライマリ以外からの書き込みを確認（`docs/operations.md` のリリース手順の初回の実施） | GitHub・クラウド | マージの承認 | §2 |
+| 8 | 最初のリリース（その後 `readinessProbe: true` で cdktn を deploy）: feature ブランチを PR で `dev` にマージし、3クラウドで `/healthz`（同じ版）・`/readyz`・ログ（各クラウドが自分をプライマリとする `Primary: <cloud> (epoch 1)`）・読み書きを確認。単体構成なので、データはクラウドごとに別々。プライマリ以外のクラウドからの書き込みの確認は 9a で行う（`docs/operations.md` のリリース手順の初回の実施） | GitHub・クラウド | マージの承認 | §2 |
 | 9 | RTT と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` と接続数の想定を確認 | dev | — | API-05、API-06 |
-| 9a | VPN とプライベート DNS を有効にし、`topology` を `cluster` にして、クラスタとしてテストする（単体のときのデータは1クラウド分だけ残る。他のノードはリセットしてから `replication-setup.sh`） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19 |
+| 9a | VPN とプライベート DNS を有効にし、他クラウドの DB への接続を確認（API-03）した上で、`topology` を `cluster` にして、クラスタとしてテストする（単体のときのデータは1クラウド分だけ残る。他のノードはリセットしてから `replication-setup.sh`） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19 |
 | 10 | 運用手順のリハーサル（切り替え、強制切り替え、旧プライマリの復帰、パスワード変更、Azure 障害時の手順） | dev | クラウドの DB への実行の承認 | API-09 |
 | 11 | ~~変更履歴の削除のジョブ~~ 実装済み。最初のリリースの後に `journalPrune.enabled: true` で cdktn を deploy し、3クラウドで実行を確認する。deploy 時に確認すること: EventBridge Scheduler がリビジョンなしのタスク定義 ARN で最新を実行するか、`roles/run.invoker` でジョブを実行できるか、Cloud Scheduler API の有効化 | cdktn・クラウド | deploy の承認 | API-07 |
 | 12 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |

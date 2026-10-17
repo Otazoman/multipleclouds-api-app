@@ -106,7 +106,9 @@ done
 echo "-- 3. subscriptions"
 for subscriber in "${nodes[@]}"; do
   sub_count="$(psql_admin "$subscriber" -At <<'SQL'
-SELECT count(subname) FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%';
+-- pg_subscription is shared by the databases of the server: this database's only
+SELECT count(subname) FROM pg_subscription
+ WHERE subname LIKE 'mc\_sub\_%' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )"
   for publisher in "${nodes[@]}"; do
@@ -123,7 +125,8 @@ SQL
     conninfo+=" sslmode=$(conninfo_quote "${sslmode:-require}")"
     # "", "t" (enabled) or "f" (disabled by scripts/switchover.sh --force)
     enabled="$(psql_admin "$subscriber" -At -v sub="$sub" <<'SQL'
-SELECT subenabled FROM pg_subscription WHERE subname = :'sub';
+SELECT subenabled FROM pg_subscription
+ WHERE subname = :'sub' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )"
     if [[ "$enabled" == "f" ]]; then
@@ -137,7 +140,8 @@ SQL
       # briefly).
       same="$(SUB_CONNINFO="$conninfo" psql_admin "$subscriber" -At -v sub="$sub" 2>/dev/null <<'SQL'
 \getenv conninfo SUB_CONNINFO
-SELECT subconninfo = :'conninfo' FROM pg_subscription WHERE subname = :'sub';
+SELECT subconninfo = :'conninfo' FROM pg_subscription
+ WHERE subname = :'sub' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )" || same=""
       if [[ "$same" != "t" ]]; then

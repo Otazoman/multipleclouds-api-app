@@ -28,6 +28,23 @@
 - Networks, VPN, private DNS, databases, container services and CI/CD are
   created by the infrastructure repository (`cdktn_multicloud_backend`).
 
+### Cluster or clouds alone
+
+The picture above is a **cluster** of three clouds; two clouds work the same
+way. The nodes are listed in `PEER_NODES` (the other nodes) and
+`replication/nodes.env` (for the scripts), so the code does not depend on
+their number.
+
+A cloud can also run **alone** (a cluster of one node): `PEER_NODES` is
+empty, nothing replicates and writes need no confirmation from another
+node (`WRITE_ACK_PEERS` becomes `0`). It needs no VPN or private DNS: the
+API reaches its own database by the database's own endpoint. Several clouds
+may run alone side by side, each with its own data (the infrastructure
+repository's `apiContainerConfig.topology`: `cluster` or `independent`).
+Turning clouds that ran alone into a cluster keeps the data of one of them;
+the others are reset and copied from it ([operations.md](operations.md),
+"Adding a removed node back").
+
 ## Components
 
 | Path | Role |

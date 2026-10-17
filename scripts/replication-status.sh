@@ -18,6 +18,7 @@ SELECT s.subname, s.subenabled AS enabled, st.received_lsn, st.latest_end_time
   FROM pg_subscription s
   LEFT JOIN pg_stat_subscription st ON st.subid = s.oid AND st.relid IS NULL
  WHERE s.subname LIKE 'mc\_sub\_%'
+   AND s.subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())
  ORDER BY s.subname;
 \echo 'replication slots (WAL retained for subscribers on other nodes)'
 SELECT slot_name, active,

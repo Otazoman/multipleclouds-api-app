@@ -199,7 +199,8 @@ for node in "${!reachable[@]}"; do
 SELECT s.remote_lsn
   FROM pg_subscription sub
   JOIN pg_replication_origin_status s ON s.external_id = 'pg_' || sub.oid
- WHERE sub.subname = :'sub';
+ WHERE sub.subname = :'sub'
+   AND sub.subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )"; then
     echo "   $node: cannot read ($(head -n 1 <<< "$lsn"))"
@@ -246,7 +247,9 @@ for node in "${nodes[@]}"; do
   [[ -z "${reachable[$node]:-}" || "$node" == "$current" ]] && continue
   psql_admin "$node" -v sub="mc_sub_${current}_to_${node}" <<'SQL'
 SELECT format('ALTER SUBSCRIPTION %I DISABLE', subname)
-  FROM pg_subscription WHERE subname = :'sub' AND subenabled \gexec
+  FROM pg_subscription
+ WHERE subname = :'sub' AND subenabled
+   AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \gexec
 SQL
   write_state "$node" "$target" "$new_epoch"
 done
