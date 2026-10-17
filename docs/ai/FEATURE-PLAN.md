@@ -1,0 +1,215 @@
+# FEATURE-PLAN: multicloud_api_apps の残課題
+
+- 作成日: 2026-10-12
+- ステータス: フェーズ 0a・0b・1・2 は実装済み（ブランチ `feature/primary-writes-and-models`、コミット `31bb879`。どの環境のブランチにも未マージ）。ブランチ運用は決定済み（§7）・移行は未着手。**作業は別日に再開する。再開時は §8 から**。
+- 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§12（CI/CD 連携）と対応する。
+
+## 1. 実装済みの内容（要約）
+
+| フェーズ | 内容 | 主なファイル |
+|---|---|---|
+| 0a | 書き込みをプライマリ1か所に集約。読み取りは自クラウド。コミット後に他ノード1つ以上のディスク確定を待つ準同期。`switchover.sh`（初回・計画的・強制） | `src/cluster.ts`、`migrations/0002_cluster_state.sql`、`scripts/switchover.sh` |
+| 0b | 変更履歴 `app.write_journal`、冪等キー、`journal-diff.sh`、`journal-prune.sh`。パブリケーションは TRUNCATE を複製しない。レプリケーション用パスワード変更時にサブスクリプションの接続文字列も更新 | `migrations/0003_write_journal.sql`、`scripts/journal-*.sh`、`scripts/replication-setup.sh` |
+| 1 | YAML のモデル定義（`models/*.yaml`）から GraphQL API を起動時に生成。`npm run generate` でマイグレーションとスキーマの出力を生成 | `src/models/`、`src/data/`、`src/schema.ts`、`src/generate.ts` |
+| 2 | リレーション（belongsTo / hasMany、まとめて読み込み）、条件指定の更新・削除、読み取り専用の名前付き SQL クエリ | 同上、`src/data/loaders.ts`、`src/data/queries.ts` |
+
+設計の詳細は `docs/architecture.md`、`docs/models.md`、`docs/operations.md`。
+
+## 2. 決定事項（ユーザー確認済み）
+
+| 項目 | 決定 |
+|---|---|
+| 書き込みの方式 | プライマリ集約（C 案）。障害時は数分以内の切り替えを許容 |
+| 書き込みの経路 | 各 API がプライマリの DB に VPN 経由で直接接続する（内部 LB は使わない） |
+| 孤立したプライマリ対策 | 同期レプリケーションはマネージド DB で設定できないため、アプリ側の準同期で代替 |
+| API 用の環境変数 | 全ノードの接続先・ID・パスワードを各 API に持たせてよい |
+| キュー（SQS 等） | トランザクションデータには使わない。後続処理（通知など）に限る |
+| ブランチと環境 | `dev` → dev 環境、`staging` → stg 環境、`prod` → prod 環境。`main` は prod にリリース済みのコードを保管するだけで、デプロイは起動しない（§7、2026-10-12） |
+| 最初のリリース | 現在の feature ブランチは、クラウド側の準備（§3 の API-01〜03）の後に `dev` へマージする |
+
+## 3. 残課題
+
+優先度: P1 = main へのマージ前に必要、P2 = 本番運用の前に必要、P3 = 改善。
+
+| ID | 優先度 | 内容 | 状態 |
+|---|---|---|---|
+| API-01 | P1 | クラウドでの初回 DB セットアップ（`migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`）。実行場所は §4 | 未着手 |
+| API-02 | P1 | cdktn: 各 API コンテナに `PEER_NODES`、`DB_<NODE>_HOST`、`DB_<NODE>_PASSWORD`（シークレット参照）を追加。他クラウドの `app_api` パスワードを各クラウドのシークレットストアにも置く必要がある（FEAT-01 §7 は自クラウド分のみの前提） | 未着手。§5 の決定に依存 |
+| API-03 | P1 | クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認 | 未着手 |
+| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手 |
+| API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整 | 未着手 |
+| API-06 | P2 | DB の接続数: 各インスタンスが全ノードにプールを持ち、書き込みはプライマリに集中する。最大インスタンス数（ECS 10、Container Apps 10、Cloud Run 2）× プール 10 で、プライマリへの接続が最大約 220 となり `max_connections = 100` を超え得る。インフラ側の対策を検討（RDS Proxy、Cloud SQL Managed Connection Pooling、Azure Flexible Server の PgBouncer。トランザクション単位のプーリングと相性はよいが、確認待ちの間は接続を占有する）。プールのサイズ（`DB_POOL_MAX`）の見直しも | 検討中（インフラ側） |
+| API-07 | P2 | `journal-prune.sh` の定期実行の方法（§4.3） | 未決定 |
+| API-08 | P2 | シークレットの管理方式（§5） | 検討中 |
+| API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更 | 未着手 |
+| API-10 | P3 | フェーズ 3: MySQL 対応。まず3クラウドのマネージド MySQL で、レプリケーションの複製元を付け替えられるか（どのクラウドもプライマリになれるか）を PoC で確認。成り立つ場合のみ、DB 依存部分（確認待ち・切り替え・SQL の方言・DDL 生成）をアダプターに分離して実装 | 未着手 |
+| API-11 | P3 | 強制切り替えで受信量が少なかったノードの修復を、初期化（再シード）ではなく変更履歴から行えるようにする（現状は `journal-diff.sh` で一覧にするだけ） | 未着手 |
+| API-12 | P3 | 名前付きクエリの SQL を起動時または `npm run generate` 時に検証する（現状は実行するまで分からない） | 未着手 |
+| API-13 | P3 | `compose.yaml` 冒頭のコメントがローカル環境の説明として `docs/getting-started.md` を指している（実際は README） | 未着手 |
+| API-14 | P1 | ローカルの `main` が `origin/main` より 1 コミット先行（feature ブランチと同じ未リリースのコミット）。§7 の運用では main はリリース済みのコードだけなので、`origin/main` に戻す（ローカルのみの操作。要承認） | 未着手 |
+| API-15 | P1 | ブランチ運用への移行（§7.5）: `dev`・`staging`・`prod` ブランチの作成、cdktn の `cicdTrigger.branches` の変更、GitHub のブランチ保護と既定のブランチ | 決定済み・未着手 |
+| API-16 | P2 | リリースを安全にする改善（§7.6）: ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness | 提案中（要承認） |
+
+## 4. スクリプトの実行場所（API-01、API-07）
+
+### 4.1 方針
+
+cdktn でインフラを作成した後、**作業用 VM 上でスクリプトを実行する**。これは FEAT-01 §2・§7 の決定（作業用 VM からのシェルスクリプト、全クラウドのパスワードが必要なため Key Vault を読める Azure の VM で3クラウドにログインして実行）と一致する。
+
+- VM は cdktn が3クラウドに作成済み（`config/aws/ec2.ts`、`config/google/gce.ts`、`config/azure/vm.ts`）。
+- `scripts/vm_init.sh`（cdktn）が PostgreSQL の公式リポジトリから `postgresql-client` を入れるため、スクリプトが必要とする `psql` 15 以上を満たす。
+- VM にはこのリポジトリを clone し、`replication/nodes.env` を作る（git 管理外）。パスワードはファイルに書かず、実行直前にシークレットストアから読み出して export する。
+- DB 同士・VM から各 DB への通信は、cdktn の SG・NSG で VPC/VNet の範囲から許可されている。
+
+### 4.2 注意点（新しい設計で増えたもの）
+
+1. **Azure の障害時の強制切り替え**: Azure の VM でしか実行できないと、Azure 障害中に `switchover.sh --force` を実行できない。`switchover.sh` が必要とするのは接続できるノードの**管理者パスワードだけ**なので、AWS または Google の VM から、生き残ったノードの管理者パスワードだけを使って実行できるよう、手順を用意しておく（管理者パスワードの置き場所は §5 の決定に従う）。
+2. **作業者のログイン**: FEAT-01 §7 では VM に権限を付けず、作業者が自分のアカウントでログインする。手動実行の手順（API-01、切り替え）はこれで問題ない。
+3. **定期実行（API-07）**: `journal-prune.sh` を VM の cron で動かすには、VM に管理者パスワード（またはシークレットを読む権限）を常駐させる必要があり、FEAT-01 §7 の「VM に権限を付けない」と矛盾する。
+
+### 4.3 `journal-prune.sh` の定期実行の選択肢（未決定）
+
+| 案 | 内容 | 長所 | 短所 |
+|---|---|---|---|
+| A. 手動で定期実行 | 作業者が週1回などログインして実行 | 権限の追加なし | 忘れると履歴が増え続ける（性能・容量への影響は小さいが、冪等キーの有効期間が延びるだけで実害は限定的） |
+| B. VM の cron | 1台の VM に、プライマリ削除用の専用ロール（`app.write_journal` の DELETE だけ）を作り、その資格情報を置く | 単純 | VM に常駐する資格情報が増える。その VM のクラウドの障害中は止まる |
+| C. コンテナのスケジュール実行 | ECS Scheduled Task / Cloud Run Jobs + Cloud Scheduler / Container Apps Jobs から実行。資格情報はシークレット参照で渡す | 権限を最小化でき、シークレット管理の仕組みに乗る | cdktn 側の追加（ジョブ、スケジューラ、権限）が必要。コスト増はわずか |
+
+## 5. シークレットの管理方式（API-08、検討中）
+
+### 5.1 現在の決定（FEAT-01 §7）
+
+cdktn はシークレットの入れ物とダミー値（`CHANGE_ME`）だけを作り、本当の値は作業者が各クラウドの VM から CLI で入れる。値は Terraform の state に残らない。
+
+新しい設計で必要になる値:
+
+| 値 | 使う場所 | 備考 |
+|---|---|---|
+| 各ノードの `app_api` パスワード | **全クラウドの API**（書き込みはプライマリへ、プライマリはどのクラウドにもなり得る） | 1つの値を3つのシークレットストアに置く必要がある（3×3 の配置） |
+| 各ノードの `app_repl` パスワード | 他ノードのサブスクリプション（DB 内に保存）と `replication-setup.sh` | API は使わない |
+| 各ノードの管理者パスワード | スクリプト（作業用 VM） | cdktn の `config/.env` と state にある（SEC-04、許容済み） |
+
+### 5.2 検討する選択肢
+
+| 案 | 内容 | 長所 | 短所・制約 |
+|---|---|---|---|
+| A. 現行（入れ物＋ダミー値、値は VM から CLI） | FEAT-01 §7 のまま。各クラウドのストアに、他クラウドの `app_api` パスワード用の入れ物も追加する | 値が state に残らない。決定済みの手順に沿う | 手作業が増える（1つの値を3か所に入れる）。入れ間違いで書き込みが失敗する |
+| B. cdktn で生成・配布 | cdktn が乱数でパスワードを生成し（`random_password`）、3クラウドのストアに書き込み、コンテナにも参照を設定する | 自動化され、3か所の値が必ず一致する。ローテーションも cdktn の再デプロイでできる | 値が Terraform の state に平文で残る（SEC-04 のリモート backend 化と暗号化の必要性が上がる）。**Azure Key Vault はパブリックアクセスなしのため、VNet の外から cdktn がシークレットを書き込めない**（FEAT-01 §7 でシークレットを作らない理由）。cdktn を VNet 内で実行するか、デプロイ時だけ実行元 IP を許可するなどの対応が必要。DB ロールのパスワード設定（`api-role-setup.sh`）との同期も要る |
+| C. B の一部だけ | 生成と AWS・Google への配布は cdktn、Azure Key Vault への書き込みだけ VM から | Azure の制約を避けられる | 手順が2系統になる |
+| D. パスワードを使わない認証 | RDS IAM 認証、Cloud SQL IAM 認証、Entra ID 認証 | パスワードが不要 | 他クラウドのコンテナから接続する場合（書き込みはプライマリへ送るため必須）、他クラウドの ID で認証する仕組み（Workload Identity 連携など）が必要で複雑。レプリケーション用ユーザーには使えない |
+
+### 5.3 判断に必要なこと
+
+- state の扱い（SEC-04）をどうするか。B・C を選ぶなら、リモート backend と暗号化・アクセス制御が実質的に前提になる。
+- パスワードのローテーションの頻度と、その手間をどこまで許容するか。
+- Azure Key Vault への書き込み経路（VNet 内の実行環境を用意するか）。
+
+決定後、FEAT-01 §7 と本ファイル、`docs/getting-started.md`・`docs/operations.md`（英・日）を更新する。
+
+## 6. 最初のリリース（feature ブランチ → dev 環境）の手順（案）
+
+1. API-02（cdktn の環境変数・シークレット参照）を、新しいアプリでも古いアプリでも動く形で先にデプロイする（古いアプリは新しい環境変数を無視する）。
+2. API-01（DB セットアップ）を実行する。マイグレーション 0002・0003 は追加のみで、古いアプリはそのまま動く。`switchover.sh` の初回設定も古いアプリには影響しない。
+3. API-03・API-04 を確認する。
+4. feature ブランチを `dev` にマージし、dev 環境の3クラウドのデプロイを起動する（§7 の運用に移行済みであること。API-15）。
+5. 各クラウドで `/readyz`、API のログ（`Primary: <node> (epoch N)`）、プライマリ以外のクラウドからの書き込みを確認する。
+
+## 7. リリースとブランチ運用（決定 2026-10-12）
+
+### 7.1 ブランチ
+
+| ブランチ | 役割 | CI/CD |
+|---|---|---|
+| `dev` | 開発の統合先。feature ブランチは `dev` から作り、PR で `dev` にマージする | dev 環境の3クラウドにデプロイ |
+| `staging` | stg 環境に出すコード | stg 環境の3クラウドにデプロイ |
+| `prod` | prod 環境に出すコード | prod 環境の3クラウドにデプロイ |
+| `main` | prod にリリースし、確認が済んだコードの保管。リリースの履歴（必要ならタグ `vX.Y.Z` を付ける） | 起動しない |
+
+- 環境は FEAT-04 のとおり別々のクラウドアカウント。各環境の CI/CD は、その環境のブランチだけを監視する（cdktn の `cicdTrigger.branches` を `byEnv({ dev: ["dev"], stg: ["staging"], prod: ["prod"] })` にする）。
+- 昇格（`dev` → `staging` → `prod` → `main`）は **fast-forward のみ**。stg で確認したものと同じコミットが prod と main に入る。
+
+### 7.2 通常のリリースの流れ
+
+```
+feature/* ──PR──▶ dev ──ff──▶ staging ──ff──▶ prod ──ff──▶ main
+                   │             │             │
+              dev 環境       stg 環境       prod 環境      （保管のみ）
+```
+
+各環境に出すとき（ブランチを進める前に）:
+
+1. **DB の更新**（その環境の作業用 VM）: `migrate.sh` → 新しいテーブルがあれば `replication-setup.sh` → 新しい関数があれば `api-role-setup.sh`。アプリより先に行う（API は起動時にモデル定義から SQL を組み立てるため、新しい列・テーブルを使う版は DB の更新前に動かない）。
+2. **ブランチを進める**（PR でマージ）→ その環境の3クラウドでビルド・デプロイ。
+3. **確認**: 3クラウドの `/readyz`、同じ版が動いていること（API-16 の版の確認）、プライマリ以外のクラウドからの書き込み。
+4. 一部のクラウドだけ失敗したら、そのクラウドのビルドを再実行する（マイグレーションは追加のみなので、混在中も動く）。
+5. prod の確認が済んだら `prod` を `main` に fast-forward する。
+
+列・テーブルの削除は、それを使わない版を全環境に出した**次のリリース**で、手書きのマイグレーションとして行う（`docs/models.md`）。
+
+### 7.3 戻すとき
+
+- 環境のブランチで revert → その環境に前の版が再デプロイされる。マイグレーションは追加のみなので、古いアプリはそのまま動く。
+- DB の変更は戻さない（追加のみのため不要）。
+
+### 7.4 緊急の修正（hotfix）
+
+```
+prod ──▶ hotfix/* ──PR──▶ prod ──ff──▶ main
+                            └──merge──▶ staging, dev（取り込み）
+```
+
+- `prod` から `hotfix/*` を作り、PR で `prod` にマージする（必要なら先に stg で確認: `staging` にもマージして確認してから `prod`）。
+- その後、修正を `staging` と `dev` に取り込む（マージ）。これで次の通常の昇格が fast-forward で進められる状態に戻る。
+
+### 7.5 移行の手順（API-15。各手順は実施前に承認を得る）
+
+1. GitHub に `dev`・`staging`・`prod` ブランチを作る（起点はリリース済みの `origin/main`）。
+2. cdktn: `cicdTrigger.branches` を環境ごとに変更し、dev 環境に deploy する（インフラの変更）。これ以降 `main` への push はデプロイを起動しない。順番を逆にすると、移行の途中で `main` への push が dev 環境のデプロイを起動するので、cdktn の変更を先に行うか、その間 `main` に push しない。
+3. GitHub のブランチ保護: `dev`・`staging`・`prod`・`main` は PR 必須・直接 push 禁止。`staging`・`prod`・`main` は fast-forward（リニアな履歴）のみ。既定のブランチは PR の向き先になる `dev` にする。
+4. ローカルの `main` を `origin/main` に戻す（API-14）。
+5. ドキュメント: `README`・`docs/getting-started`・`docs/operations`（英語・日本語）にリリース手順を書く。cdktn の FEAT-04 §7.2 #6 と FEAT-01 §12.4 にも反映する（別リポジトリ。変更前に確認）。
+
+### 7.6 リリースを安全にする改善（API-16、提案中）
+
+| # | 内容 | 効果 |
+|---|---|---|
+| 1 | `Dockerfile` のビルド段階で `npm test` と `npm run generate -- --check` を実行し、失敗したらビルドを止める | 3クラウドすべてで、テストを通らない版がデプロイされない。新しいサービスは不要 |
+| 2 | ビルド時にコミット SHA を埋め込み、`/healthz` で返す | 3クラウドで同じ版が動いているかを確認できる |
+| 3 | `/readyz` で、アプリに含まれるマイグレーションが DB に適用済みか（`ops.schema_migrations`）も確認する | DB の更新を忘れても新しい版は準備完了にならず、ECS の Blue/Green・Cloud Run・Container Apps がトラフィックを切り替えない（古い版が動き続ける） |
+
+## 8. 再開時にやること（2026-10-12 時点）
+
+### 8.1 現在の状態
+
+| 対象 | 状態 |
+|---|---|
+| アプリのコード | フェーズ 0a〜2 を `feature/primary-writes-and-models` に push 済み（`31bb879`）。テスト 98 件成功 |
+| このファイル | **未コミット**（`feature/primary-writes-and-models` の作業ツリーにある） |
+| ローカルの `main` | `origin/main`（`c1c2420`）より 1 コミット先行（`31bb879`）。push しないこと（API-14） |
+| GitHub | `main`（`c1c2420`）と `feature/primary-writes-and-models` のみ。`dev`・`staging`・`prod` は未作成 |
+| CI/CD | cdktn の `cicdTrigger.branches` は全環境 `main` のまま。**`main` に push すると dev 環境のデプロイが起動する** |
+| クラウド | 構築済みは dev 環境のみ（FEAT-04）。DB のセットアップ（API-01）、新しい環境変数（API-02）は未実施 |
+| ローカルの compose 環境 | 3 ノードで起動中（プライマリは google、世代 2）。不要なら `docker compose down -v` |
+| その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい）。PoC のスクリプトはリポジトリ外（作業用の一時ディレクトリ） |
+
+### 8.2 ユーザーの回答待ち
+
+| # | 内容 | 関連 |
+|---|---|---|
+| 1 | ブランチ運用への移行の作業（§7.5 の 1〜5）を進めてよいか。一部だけならどれか | API-14、API-15 |
+| 2 | リリースを安全にする改善（§7.6 の 1〜3）を実施してよいか | API-16 |
+| 3 | このファイルをコミットして feature ブランチに push してよいか | — |
+| 4 | シークレットの管理方式（§5 の A〜D） | API-08、API-02 |
+| 5 | `journal-prune.sh` の定期実行の方法（§4.3 の A〜C） | API-07 |
+| 6 | DB の接続数への対策（インフラ側） | API-06 |
+
+### 8.3 作業の順番（案）
+
+1. 8.2 の 1〜3 の回答を得て、ブランチ運用に移行する（§7.5）。cdktn の `cicdTrigger` の変更を先に行い、`main` への push がデプロイを起動しない状態にする。
+2. 8.2 の 2 が承認されれば、API-16 を実装して feature ブランチに追加する。
+3. 8.2 の 4 を決め、cdktn 側で API-02（`PEER_NODES`・`DB_<NODE>_*` とシークレットの配置）を実装する（FEAT-01 §7 の更新を含む）。
+4. dev 環境で API-03・API-04 を確認し、API-01（DB のセットアップ）を作業用 VM から実行する（§4）。
+5. feature ブランチを `dev` にマージして dev 環境にリリースする（§6）。API-05（RTT の実測）と API-09（切り替えのリハーサル）を dev 環境で行う。
+6. 8.2 の 5・6 を決めて実装する（API-07、API-06）。
+7. stg・prod の環境ができたら、§7.2 の手順で昇格する。
+8. 以降、P3 の課題（API-10〜13）。
