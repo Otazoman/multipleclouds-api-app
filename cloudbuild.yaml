@@ -7,14 +7,18 @@
 #   _SERVICE        Cloud Run service name
 #   _WORKER_POOL    private pool: projects/<project>/locations/<region>/workerPools/<name>
 #   _IMAGE_NAME     image name in the repository
+#   _PRUNE_JOB      Cloud Run job running the same image (journal pruning;
+#                   empty: none)
 substitutions:
   _IMAGE_NAME: multicloud-api
+  _PRUNE_JOB: ""
 
 steps:
   - id: build
     name: gcr.io/cloud-builders/docker
     args:
       - build
+      - --build-arg=APP_VERSION=$COMMIT_SHA
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
       - .
@@ -33,6 +37,17 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA
       - --region=${_REGION}
       - --quiet
+  - id: update-journal-prune-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if [ -n "${_PRUNE_JOB}" ]; then
+          gcloud run jobs update "${_PRUNE_JOB}" \
+            --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA \
+            --region=${_REGION} --quiet
+        fi
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPOSITORY}/${_IMAGE_NAME}:$SHORT_SHA

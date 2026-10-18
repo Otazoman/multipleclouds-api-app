@@ -1,0 +1,24 @@
+# Sample model. The table app.items was created by
+# migrations/0001_create_items.sql; this file matches it.
+# Format: docs/models.md
+name: Item
+description: An item.
+fields:
+  name:
+    type: string
+    required: true
+  description:
+    type: string
+indexes:
+  # From 0001 (the default list order).
+  - name: items_created_at_idx
+    fields: [createdAt, id]
+list:
+  defaultLimit: 50
+  maxLimit: 100
+  filterable:
+    name: [eq, ilike]
+    createdAt: [gte, lt]
+  sortable: [createdAt, updatedAt, name]
+  defaultOrder:
+    - field: createdAt

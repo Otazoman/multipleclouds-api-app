@@ -41,13 +41,15 @@ require_node_var() {
 # Runs psql on a node as its admin user. Extra arguments go to psql.
 # The password is passed through PGPASSWORD, never on the command line.
 psql_admin() {
-  local node="$1"
+  local node="$1" sslmode port
   shift
+  sslmode="$(node_var "$node" SSLMODE)"
+  port="$(node_var "$node" PORT)"
   PGPASSWORD="$(require_node_var "$node" ADMIN_PASSWORD)" \
-  PGSSLMODE="$(node_var "$node" SSLMODE | sed 's/^$/require/')" \
+  PGSSLMODE="${sslmode:-require}" \
     psql --no-psqlrc -v ON_ERROR_STOP=1 -X -q \
       -h "$(require_node_var "$node" HOST)" \
-      -p "$(node_var "$node" PORT | sed 's/^$/5432/')" \
+      -p "${port:-5432}" \
       -U "$(require_node_var "$node" ADMIN_USER)" \
       -d "$DB_NAME" "$@"
 }

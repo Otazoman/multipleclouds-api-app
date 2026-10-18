@@ -1,0 +1,207 @@
+# AI Development Rules
+
+`CLAUDE.md` and `docs/ai/PROJECT_RULES.md` point here. This file is the single
+source of truth for AI-assisted work in this repository.
+
+## 1. Project Overview
+
+A GraphQL CRUD API deployed active/active to AWS, Google Cloud and Azure.
+
+- Node.js 24, TypeScript, GraphQL Yoga, node-postgres (`pg`), Jest
+- One container per cloud (ECS / Cloud Run / Container Apps), each connected
+  to that cloud's managed PostgreSQL 18
+- The databases replicate to each other with bidirectional native logical
+  replication (`scripts/replication-setup.sh`)
+- Infrastructure (networks, VPN, databases, container services, CI/CD) is
+  defined in the separate repository `cdktn_multicloud_backend`. Do not
+  assume infrastructure details; read that repository or ask.
+
+See `docs/architecture.md` for the design.
+
+## 2. Language and Communication
+
+- Reason and investigate in English.
+- Write user-facing explanations, reports, questions and proposals in
+  Japanese unless the user asks otherwise. Code, commands, identifiers and
+  file paths stay in their original form.
+- Separate confirmed facts from assumptions; state uncertainty explicitly.
+- Source code, comments and JSDoc are in English.
+- Documentation for humans is kept in English (`*.md`) and Japanese
+  (`*.ja.md`). Update both in the same change. Files for AI only (this file,
+  `CLAUDE.md`, `docs/ai/`) are English only.
+
+## 3. Core Principles
+
+### 3.1 Investigate before changing
+
+Read the relevant code, scripts, migrations and documentation before
+proposing a change. Never invent configuration values, APIs, library
+behavior, cloud service behavior or existing behavior. If something cannot
+be confirmed, say so and ask.
+
+### 3.2 Preserve existing design
+
+Keep the existing architecture, interfaces, conventions and file layout.
+Do not refactor, rename, restructure, modernize or replace dependencies
+unless it is required by the request or explicitly approved.
+
+### 3.3 Better practices
+
+When a better design is identified, explain the current approach, the
+problem, the proposal, affected files, alternatives and trade-offs, then
+wait for explicit approval. Finding a better solution does not authorize
+the change.
+
+## 4. Change Approval Policy
+
+Explicit user approval is required before non-trivial changes involving:
+
+- architecture or the write-conflict model (section 6)
+- the GraphQL API (types, fields, arguments, error codes)
+- the data model or migrations
+- replication scripts or replication topology
+- configuration (environment variables) or their defaults
+- security, authentication, roles and grants
+- dependencies (adding, removing, upgrading)
+- CI/CD files (`buildspec.yml`, `cloudbuild.yaml`, `azure-pipelines.yml`)
+  and the `Dockerfile`
+- anything that runs against a cloud database or changes a deployed
+  environment
+- destructive or hard-to-revert operations
+
+Do not implement first and ask later.
+
+## 5. Minimal Change Policy
+
+Make the smallest change that solves the request. Do not modify unrelated
+files, reformat untouched code, or combine unrelated improvements. Report
+other findings separately.
+
+## 6. Database and Replication Safety
+
+These rules protect data consistency across the clouds. Violating them can
+silently diverge the databases.
+
+- Native logical replication has no conflict resolution: a change received
+  from another node overwrites the local row. Two databases must never be
+  written concurrently. All writes go to the primary through
+  `PrimaryWriter.transaction` (`src/cluster.ts`), which checks the epoch
+  (`ops.assert_primary`) and waits for another node to flush the commit
+  (`ops.wait_for_peers`). Never write through the local pool or bypass
+  these checks.
+- Only `scripts/switchover.sh` changes `ops.cluster_state`.
+- Exception: journal pruning (`src/prune.ts`, `scripts/journal-prune.sh`)
+  deletes old `app.write_journal` rows directly, as maintenance: not through
+  `PrimaryWriter` and not journaled, but only on the primary, checked with
+  `ops.assert_primary` in every transaction.
+- Every write records itself in `app.write_journal` through
+  `PrimaryWriter` (`WriteMeta`: operation, arguments, idempotency key,
+  `revive` for the stored result). New mutations must pass a `WriteMeta`
+  and accept an optional `idempotencyKey`.
+- The publication does not publish `TRUNCATE`: a truncation stays on its
+  node and silently diverges it from the others. Use `DELETE` for
+  replicated data; truncate only when resetting a node
+  (`docs/operations.md`).
+- Logical replication does not replicate DDL. Every schema change is a new
+  file in `migrations/` applied to every node with `scripts/migrate.sh`.
+  Never edit or rename a migration that may have been applied.
+- Tables in schema `app` are replicated; schema `ops` is node-local. Put
+  replicated data only in `app`.
+- After adding a table, run `scripts/replication-setup.sh` so that the
+  publication and subscriptions include it, before the API writes to it.
+- Unique and foreign-key constraints are safe because only the primary
+  writes; they are checked there.
+- IDs are UUIDs generated by the database. Do not introduce sequences or
+  serial keys for replicated tables: logical replication does not copy
+  sequence values, so a new primary would hand out numbers already used.
+- Scripts in `scripts/` must stay idempotent (safe to run again).
+- Never run scripts against a cloud database without explicit approval.
+  The local compose environment (`compose.yaml`) may be used freely.
+
+## 7. Project Structure
+
+| Path | Contents |
+| --- | --- |
+| `src/index.ts` | Entry point: config, pool, server, graceful shutdown |
+| `src/config.ts` | Environment variables (validated at startup) |
+| `src/server.ts` | HTTP server: health endpoints and `/graphql` |
+| `src/cluster.ts` | Write routing: primary lookup, write transactions, commit confirmation |
+| `src/prune.ts` | Journal pruning job (`node dist/prune.js`), scheduled by the infrastructure |
+| `src/migrations.ts` | Readiness: are this image's migrations applied to this cloud's database |
+| `models/*.yaml` | Model definitions (tables and the GraphQL API); see `docs/models.md` |
+| `src/models/` | Loading / validating models; DDL and snapshot diff |
+| `src/schema.ts` | GraphQL schema generated from the models |
+| `src/data/` | Generic service (business rules), repository (SQL), relation loaders and named query runner for any model |
+| `src/generate.ts` | `npm run generate`: migrations, `generated/schema.graphql` |
+| `generated/` | Generated output; never edit by hand |
+| `__tests__/` | Jest unit tests (no database) |
+| `migrations/` | SQL migrations (`NNNN_description.sql`) and `models.snapshot.json` |
+| `scripts/` | Database scripts (bash + psql) |
+| `replication/` | Node settings for the scripts |
+| `docs/` | Human documentation (English + Japanese) |
+
+## 8. Coding Standards
+
+- TypeScript `strict`; keep `npm run typecheck` clean.
+- Tables and the API come from `models/*.yaml`. Add a model or field there,
+  then run `npm run generate` and commit the YAML, migration, snapshot and
+  `generated/schema.graphql` together (tests fail otherwise). Do not add
+  per-table code for what a model definition can express.
+- Named queries (`queries` in a model) are SQL written by developers: keep
+  them read-only, parameterized (`:name`), bounded (LIMIT, indexed
+  conditions) and tested locally; they run with the API role's privileges.
+- Changes the generator refuses (dropping, renaming, changing columns) need
+  a hand-written migration followed by `npm run generate -- --baseline`;
+  they always need approval.
+- Business rules live in services; SQL lives in repositories. Resolvers stay
+  thin. Services read through the local repository and write through the
+  writer; keep each mutation to few statements (each one is a round trip to
+  the primary, possibly in another cloud).
+- Always use parameterized queries. Never build SQL from user input.
+- Client errors are `GraphQLError` with an `extensions.code` from
+  `ERROR_CODES` (`src/data/service.ts`) or `WRITE_ERROR_CODES`
+  (`src/cluster.ts`).
+- Configuration comes only from environment variables read in
+  `src/config.ts`; invalid configuration fails at startup. Document new
+  variables in `.env.sample`, `README.md` and `README.ja.md`.
+- Follow the existing style: arrow functions for module-level helpers,
+  short English comments that explain why, not what.
+
+## 9. Dependencies
+
+Do not add, remove or upgrade packages without approval. Prefer the
+standard library and existing dependencies. Commit `package-lock.json`
+changes together with `package.json`.
+
+## 10. Testing and Validation
+
+- Run `npm run typecheck` and `npm test` after code changes.
+- Add or update unit tests for changed business rules. Do not weaken or
+  delete tests to make them pass.
+- For changes that touch SQL, migrations, scripts, replication or write
+  routing, also verify in the local compose environment (README: "Local
+  testing"), including a switchover when write routing is involved. Use
+  `docker compose run --no-deps` while a database is stopped on purpose, and
+  `-e` to pass variables to the tools container.
+- If validation cannot be performed, say why.
+
+## 11. Secrets
+
+Never commit or print passwords, keys, account IDs, subscription IDs or
+ARNs. `.env`, `replication/nodes.env`, `*.pem` and `*.key` are ignored by
+git; keep it that way. The passwords in `compose.yaml` are for throwaway
+local containers only.
+
+## 12. Git
+
+Do not commit, push, reset, rebase or rewrite history without explicit
+approval. Do not discard or overwrite the user's uncommitted changes.
+
+## 13. Reporting
+
+Before a non-trivial change, report: current understanding, problem,
+proposed change, affected files, alternatives.
+
+After a change, report: changed files, what changed, validation results,
+remaining issues, and further improvements (proposed separately, not
+implemented).

@@ -1,25 +1,59 @@
+import { Pool } from "pg";
+import { ClusterState, PrimaryWriter } from "./cluster";
 import { loadConfig } from "./config";
 import { createPool } from "./db";
+import { MigrationCheck, migrationVersions } from "./migrations";
+import { loadModels } from "./models/load";
 import { createAppServer, GRAPHQL_PATH } from "./server";
 
 const config = loadConfig();
+// Invalid model files stop the container at startup, like invalid settings.
+const models = loadModels();
 const pool = createPool(config.db);
-const server = createAppServer(pool, config.cloudId, config.graphiql);
+// Every node's database by node name; writes go to the primary among them.
+const nodes = new Map<string, Pool>([
+  [config.cloudId, pool],
+  ...Object.entries(config.peers).map(
+    ([name, db]) => [name, createPool(db)] as const,
+  ),
+]);
+const cluster = new ClusterState(nodes, config.writes.primaryRefreshMs);
+const writer = new PrimaryWriter(cluster, nodes, {
+  peers: config.writes.ackPeers,
+  timeoutMs: config.writes.ackTimeoutMs,
+});
+const server = createAppServer(
+  models,
+  pool,
+  writer,
+  config.cloudId,
+  config.graphiql,
+  config.version,
+  // A missing migrations/ stops the container at startup, like invalid models.
+  new MigrationCheck(pool, migrationVersions()),
+);
 
+void cluster.start();
 server.listen(config.port, () => {
   console.log(
-    `API (${config.cloudId}) listening on :${config.port}${GRAPHQL_PATH}`,
+    `API (${config.cloudId}, ${config.version}) listening on :${config.port}${GRAPHQL_PATH}`,
   );
 });
 
 // ECS, Cloud Run and Container Apps send SIGTERM before stopping a task /
-// instance / replica. Stop accepting requests, then close the pool.
+// instance / replica. Stop accepting requests, then close the pools.
 const shutdown = (signal: string): void => {
   console.log(`${signal} received, shutting down`);
+  cluster.stop();
   server.close(() => {
-    pool
-      .end()
-      .catch((error: Error) => console.error("Pool close failed:", error.message))
+    Promise.allSettled([...nodes.values()].map((node) => node.end()))
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            console.error("Pool close failed:", (result.reason as Error).message);
+          }
+        }
+      })
       .finally(() => process.exit(0));
   });
 };

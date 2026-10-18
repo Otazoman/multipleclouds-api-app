@@ -2,14 +2,20 @@
 # Sets up bidirectional logical replication between every pair of nodes in
 # NODES. Safe to run again: existing objects are kept, and the publication and
 # subscriptions are refreshed so that new tables in schema "app" (added by
-# migrations) start replicating.
+# migrations) start replicating, and the subscriptions' connection strings are
+# updated (e.g. after a replication password change).
 #
 # For each node:
 #   1. the replication role (NODE_<N>_REPL_USER) exists and may replicate
-#   2. publication "mc_pub" covers every table in schema "app"
+#   2. publication "mc_pub" covers every table in schema "app" and publishes
+#      inserts, updates and deletes; TRUNCATE is not replicated, so a
+#      truncation (e.g. when resetting a node) stays on its node
 #   3. one subscription per other node: mc_sub_<publisher>_to_<subscriber>,
 #      with origin = none (changes received from a node are not sent on, so
-#      they do not loop) and copy_data = false
+#      they do not loop), copy_data = false and synchronous_commit = on (the
+#      subscriber flushes each applied transaction at once, so that the
+#      primary's write confirmation, ops.wait_for_peers, does not wait for the
+#      WAL writer)
 #
 # Run scripts/migrate.sh first: the tables must exist on every node.
 #
@@ -24,9 +30,14 @@ require_psql_major 15 # \getenv
 
 PUBLICATION=mc_pub
 read -r -a nodes <<< "$NODES"
-if (( ${#nodes[@]} < 2 )); then
-  echo "NODES must list at least two nodes" >&2
+if (( ${#nodes[@]} == 0 )); then
+  echo "NODES must list the nodes" >&2
   exit 1
+fi
+if (( ${#nodes[@]} == 1 )); then
+  # A node that runs alone (no other clouds) has nothing to replicate.
+  echo "One node (${nodes[0]}): nothing to replicate"
+  exit 0
 fi
 
 # Quotes a value for a libpq connection string.
@@ -73,11 +84,15 @@ SELECT count(*) = 0 AS no_tables FROM pg_tables WHERE schemaname = 'app' \gset
   \echo 'No tables in schema app; run scripts/migrate.sh first'
   \quit 3
 \endif
-SELECT format('CREATE PUBLICATION %I FOR TABLE %s', :'pub',
-              string_agg(format('%I.%I', schemaname, tablename), ', '))
+SELECT format('CREATE PUBLICATION %I FOR TABLE %s WITH (publish = %L)', :'pub',
+              string_agg(format('%I.%I', schemaname, tablename), ', '),
+              'insert, update, delete')
   FROM pg_tables
  WHERE schemaname = 'app'
 HAVING NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = :'pub') \gexec
+SELECT format('ALTER PUBLICATION %I SET (publish = %L)', :'pub', 'insert, update, delete')
+  FROM pg_publication
+ WHERE pubname = :'pub' AND pubtruncate \gexec
 SELECT format('ALTER PUBLICATION %I ADD TABLE %I.%I', :'pub', t.schemaname, t.tablename)
   FROM pg_tables t
  WHERE t.schemaname = 'app'
@@ -91,20 +106,55 @@ done
 echo "-- 3. subscriptions"
 for subscriber in "${nodes[@]}"; do
   sub_count="$(psql_admin "$subscriber" -At <<'SQL'
-SELECT count(subname) FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%';
+-- pg_subscription is shared by the databases of the server: this database's only
+SELECT count(subname) FROM pg_subscription
+ WHERE subname LIKE 'mc\_sub\_%' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )"
   for publisher in "${nodes[@]}"; do
     [[ "$publisher" == "$subscriber" ]] && continue
     sub="mc_sub_${publisher}_to_${subscriber}"
-    exists="$(psql_admin "$subscriber" -At -v sub="$sub" <<'SQL'
-SELECT count(subname) FROM pg_subscription WHERE subname = :'sub';
+    host="$(node_var "$publisher" REPL_HOST)"
+    port="$(node_var "$publisher" PORT)"
+    sslmode="$(node_var "$publisher" SSLMODE)"
+    conninfo="host=$(conninfo_quote "${host:-$(require_node_var "$publisher" HOST)}")"
+    conninfo+=" port=$(conninfo_quote "${port:-5432}")"
+    conninfo+=" dbname=$(conninfo_quote "$DB_NAME")"
+    conninfo+=" user=$(conninfo_quote "$(require_node_var "$publisher" REPL_USER)")"
+    conninfo+=" password=$(conninfo_quote "$(require_node_var "$publisher" REPL_PASSWORD)")"
+    conninfo+=" sslmode=$(conninfo_quote "${sslmode:-require}")"
+    # "", "t" (enabled) or "f" (disabled by scripts/switchover.sh --force)
+    enabled="$(psql_admin "$subscriber" -At -v sub="$sub" <<'SQL'
+SELECT subenabled FROM pg_subscription
+ WHERE subname = :'sub' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
 SQL
 )"
-    if [[ "$exists" == "1" ]]; then
+    if [[ "$enabled" == "f" ]]; then
+      echo "   $sub: disabled, skipped (docs/operations.md, \"Switchover\")"
+      continue
+    fi
+    if [[ "$enabled" == "t" ]]; then
+      # Connection string first: REFRESH connects to the publisher with it.
+      # The stored string is readable only by superusers; when it cannot be
+      # read, it is set anyway (this restarts the subscription's worker
+      # briefly).
+      same="$(SUB_CONNINFO="$conninfo" psql_admin "$subscriber" -At -v sub="$sub" 2>/dev/null <<'SQL'
+\getenv conninfo SUB_CONNINFO
+SELECT subconninfo = :'conninfo' FROM pg_subscription
+ WHERE subname = :'sub' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
+SQL
+)" || same=""
+      if [[ "$same" != "t" ]]; then
+        echo "   $sub: update connection"
+        SUB_CONNINFO="$conninfo" psql_admin "$subscriber" -v sub="$sub" <<'SQL'
+\getenv conninfo SUB_CONNINFO
+SELECT format('ALTER SUBSCRIPTION %I CONNECTION %L', :'sub', :'conninfo') \gexec
+SQL
+      fi
       echo "   $sub: refresh"
       psql_admin "$subscriber" -v sub="$sub" <<'SQL'
 SELECT format('ALTER SUBSCRIPTION %I REFRESH PUBLICATION WITH (copy_data = false)', :'sub') \gexec
+SELECT format('ALTER SUBSCRIPTION %I SET (synchronous_commit = on)', :'sub') \gexec
 SQL
       continue
     fi
@@ -117,20 +167,10 @@ SQL
     fi
     echo "   $sub: create (copy_data = $copy_data)"
 
-    host="$(node_var "$publisher" REPL_HOST)"
-    port="$(node_var "$publisher" PORT)"
-    sslmode="$(node_var "$publisher" SSLMODE)"
-    conninfo="host=$(conninfo_quote "${host:-$(require_node_var "$publisher" HOST)}")"
-    conninfo+=" port=$(conninfo_quote "${port:-5432}")"
-    conninfo+=" dbname=$(conninfo_quote "$DB_NAME")"
-    conninfo+=" user=$(conninfo_quote "$(require_node_var "$publisher" REPL_USER)")"
-    conninfo+=" password=$(conninfo_quote "$(require_node_var "$publisher" REPL_PASSWORD)")"
-    conninfo+=" sslmode=$(conninfo_quote "${sslmode:-require}")"
-
     SUB_CONNINFO="$conninfo" psql_admin "$subscriber" -v sub="$sub" \
       -v pub="$PUBLICATION" -v copy_data="$copy_data" <<'SQL'
 \getenv conninfo SUB_CONNINFO
-SELECT format('CREATE SUBSCRIPTION %I CONNECTION %L PUBLICATION %I WITH (origin = none, copy_data = %s)',
+SELECT format('CREATE SUBSCRIPTION %I CONNECTION %L PUBLICATION %I WITH (origin = none, copy_data = %s, synchronous_commit = on)',
               :'sub', :'conninfo', :'pub', :'copy_data') \gexec
 SQL
   done

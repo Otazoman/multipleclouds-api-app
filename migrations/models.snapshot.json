@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "tables": {
+    "items": {
+      "columns": [
+        {
+          "column": "name",
+          "type": "string",
+          "required": true,
+          "unique": false
+        },
+        {
+          "column": "description",
+          "type": "string",
+          "required": false,
+          "unique": false
+        }
+      ],
+      "indexes": [
+        {
+          "name": "items_created_at_idx",
+          "columns": [
+            "created_at",
+            "id"
+          ],
+          "unique": false
+        }
+      ]
+    }
+  }
+}
