@@ -4,6 +4,20 @@
 
 クラウドへの初回デプロイの手順です。開発環境とローカルテストは [README](../README.ja.md) を参照してください。
 
+## 全体の流れ
+
+| # | 作業 | 場所 | 詳細 |
+| --- | --- | --- | --- |
+| 1 | API のフラグ（`azureSecretReady`、`readinessProbe`、`journalPrune.enabled`）を無効にしてインフラを構築 | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
+| 2 | すべてのクラウドに API のパスワードのシークレットを入れる（同じ値） | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | インフラの operations の「シークレット」 |
+| 3 | Azure：`azureSecretReady: true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「シークレット」 |
+| 4 | データベースのセットアップ | 各クラウドの VM（データベースはプライベート） | 下の 2〜3 章 |
+| 5 | API のデプロイ：環境のブランチにマージ | GitHub（プルリクエスト）。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
+| 6 | 確認 | 自分の端末 | 6 章 |
+| 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの設定の説明の「API コンテナ」 |
+
+1〜3 がインフラの構築で、4 からがこのリポジトリの作業です。
+
 ## 1. 前提条件
 
 API の動かし方は2通りです（インフラのリポジトリの `apiContainerConfig.topology` で設定します）：
@@ -37,7 +51,10 @@ DB スクリプトを実行するホストも必要です：
 
 ## 2. ノード設定
 
-そのホストで、スクリプト用のノード設定を作ります：
+**クラウド単体**（各クラウドが自分のデータベースだけで動く）の場合は、この章は不要です。各クラウドの VM で
+`scripts/node-setup.sh <cloud>` を実行します（3 章）。
+
+クラスタの場合は、ホストでスクリプト用のノード設定を作ります：
 
 ```bash
 cp replication/nodes.env.sample replication/nodes.env
@@ -94,9 +111,33 @@ scripts/replication-status.sh  # 確認
 組み込みロケール `C.UTF-8` で作ります（`replication/nodes.env` の `DB_CREATE_OPTIONS` で変更できます）。
 このデータベースはインフラでは作りません。
 
-**クラウド単体**は1ノードのクラスタです。そのクラウドのホストで `NODES` をそのクラウドだけにし
-（`replication/nodes.env`、または `NODES=<cloud> scripts/...`）、同じスクリプトを `scripts/switchover.sh <cloud>` まで
-実行します。`replication-setup.sh` は何もすることがないと表示して終わります。単体で動かすクラウドごとに行います。
+### クラウド単体：`scripts/node-setup.sh`
+
+クラウド単体は1ノードのクラスタです。そのクラウドの VM で、1つのコマンドが上のスクリプトをそのノードについて
+実行します（`replication-setup.sh` は不要）。`replication/nodes.env` も不要です：
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # clone 済みなら git pull
+cd multipleclouds-api-app
+git switch <リリースするブランチ>        # 例：dev
+scripts/node-setup.sh aws               # Google・Azure の VM では google / azure
+```
+
+見つからない値だけを聞きます：
+
+| 質問 | 答え方 |
+| --- | --- |
+| `Database address [...]` | 見つかった値のままなら Enter。なければデータベースの接続先 |
+| `Database admin user [...]` | 同上。なければインフラの管理者ユーザー（`.env.<環境名>`） |
+| `Database admin password` | 管理者のパスワード（表示されない） |
+| `API password` | 読み取れなかったときだけ聞かれる：シークレット `db-api-password` の値（表示されない） |
+| `Set up ... ? [y/N]` | 設定を確認して `y` |
+
+先に VM でそのクラウドの CLI にサインインしておくと（インフラの operations の「シークレット」）、接続先、管理者ユーザー
+（AWS、Azure）、API のパスワードをクラウドから読み取ります。最後に `Done: <cloud> runs alone ...` と表示されます。
+再実行して問題ありません。
+
+### 状態の確認
 
 状態確認の出力で、すべてのノードのプライマリと世代番号が同じ、すべてのサブスクリプションが有効、
 すべてのスロットが active、エラー件数が `0` であることを確認します。サブスクリプションが接続できない場合は、VPN、ポート 5432 の

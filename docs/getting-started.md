@@ -5,6 +5,20 @@
 This guide covers the first deployment to the clouds. For the development
 environment and local testing, see the [README](../README.md).
 
+## Overview
+
+| # | Step | Where | Details |
+| --- | --- | --- | --- |
+| 1 | Build the infrastructure with the API flags off (`azureSecretReady`, `readinessProbe`, `journalPrune.enabled`) | Infrastructure repository: `cdktn diff`, `cdktn deploy` | Infrastructure getting-started and operations ("Deploy", "Deploy again after a destroy") |
+| 2 | Set the API password secret on every cloud (the same value) | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Infrastructure operations, "Secrets" |
+| 3 | Azure: `azureSecretReady: true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Secrets" |
+| 4 | Set up the databases | Each cloud's VM (the databases are private) | Sections 2–3 below |
+| 5 | Deploy the API: merge into the environment's branch | GitHub (pull request); each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
+| 6 | Verify | Your machine | Section 6 |
+| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure configuration, "API container" |
+
+Steps 1–3 build the infrastructure; from step 4 on it is this repository's work.
+
 ## 1. Prerequisites
 
 The APIs run in one of two ways (set in the infrastructure repository,
@@ -45,7 +59,10 @@ You also need a host to run the database scripts:
 
 ## 2. Node settings
 
-On that host, create the node settings for the scripts:
+**Clouds alone** (each cloud on its own database): skip this section and
+run `scripts/node-setup.sh <cloud>` on each cloud's VM (section 3).
+
+For a cluster, create the node settings for the scripts on the host:
 
 ```bash
 cp replication/nodes.env.sample replication/nodes.env
@@ -108,11 +125,35 @@ PostgreSQL's builtin `C.UTF-8` locale (`DB_CREATE_OPTIONS` in
 `replication/nodes.env` changes it). The infrastructure does not create
 this database.
 
-**A cloud alone** is a cluster of one node: on that cloud's host, set
-`NODES` to that cloud only (in `replication/nodes.env`, or
-`NODES=<cloud> scripts/...`) and run the same scripts with
-`scripts/switchover.sh <cloud>`; `replication-setup.sh` has nothing to do
-and says so. Repeat on each cloud that runs alone.
+### A cloud alone: `scripts/node-setup.sh`
+
+A cloud alone is a cluster of one node. On that cloud's VM, one command
+runs the scripts above for that node (`replication-setup.sh` is not
+needed) without `replication/nodes.env`:
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # or git pull
+cd multipleclouds-api-app
+git switch <branch to be released>      # e.g. dev
+scripts/node-setup.sh aws               # google / azure on those clouds' VMs
+```
+
+It asks for what it cannot find:
+
+| Question | Answer |
+| --- | --- |
+| `Database address [...]` | Enter to keep the value found, otherwise the database address |
+| `Database admin user [...]` | Same; otherwise the admin user of the infrastructure (`.env.<env>`) |
+| `Database admin password` | The admin password (not shown) |
+| `API password` | Asked only when it could not be read: the value of the `db-api-password` secret (not shown) |
+| `Set up ... ? [y/N]` | `y` after checking the settings |
+
+Sign in to the cloud's CLI on the VM first (infrastructure operations,
+"Secrets") to have the address, the admin user (AWS, Azure) and the API
+password read from the cloud. It prints `Done: <cloud> runs alone ...` at
+the end and is safe to run again.
+
+### Status
 
 In the status output, every node should show the same primary and epoch,
 every subscription should be enabled, every slot active, and the error
