@@ -1,7 +1,7 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
 - 作成日: 2026-10-12（最終更新 2026-10-17）
-- ステータス: アプリの実装（フェーズ 0a〜2、リリースの安全対策、接続数の対策）は `feature/primary-writes-and-models` に push 済みで、どの環境のブランチにも未マージ。ブランチ運用への移行は完了。クラウドは全環境とも未構築（dev は destroy 済み）。**再開時は §8 から**。
+- ステータス（2026-10-17 終了時）: アプリの実装は `feature/primary-writes-and-models` に push 済みで、どの環境のブランチにも未マージ。インフラ（cdktn）の API 用の設定（環境変数・シークレット・削除ジョブ・単体／クラスタの構成）も実装済み。クラウドは全環境とも未構築。**再開時は §8 から**（次の作業は §8.2 の 1: dev 環境の構築）。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
 
@@ -153,41 +153,70 @@ cdktn でインフラを作成した後、**作業用 VM 上でスクリプト�
 
 GitHub 上の確認（CI のチェック）はない。テストは各クラウドのビルドで実行され、失敗するとデプロイされない。PR の前のテストとローカルでの確認は手順で求める。
 
-## 8. 再開時にやること（2026-10-17 時点）
+## 8. 再開時にやること（2026-10-17 終了時）
 
 ### 8.1 現在の状態
 
 | 対象 | 状態 |
 |---|---|
-| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models`（`836f4c3`）に push 済み。API-07・API-18 を含め push 済み（2026-10-17）。API-19 のアプリ側も push 済み。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`、リリース済みのコードだけ）。ローカルの `main` は `origin/main` と一致 |
-| cdktn のリポジトリ | **公開**。2026-10-17 に履歴を書き換えて強制 push（作成者のメールを noreply に、秘密鍵と PFX を履歴から削除。全コミットの ID が変わった。例: API-02 `95c781c` → `98ebfc3`、API-19 `37a5ac6` → `f98c424`）。`main` は `b1f0bd9` 以降。このリポジトリの git の `user.email` は noreply。他の clone は取り直しが必要。jest は 197 件すべて成功。証明書（Google 用の `server.crt`/`server.key`、Azure 用の PFX）は再発行済みで、次の deploy で反映される |
-| クラウド | **全環境とも未構築**（dev は 2026-10-12 に destroy、state のリソース数 0）。次の dev の deploy では VM・DB・コンテナ・CI/CD が作られる（課金あり） |
-| ローカルの compose 環境 | 3 ノードで起動中（プライマリは aws、検証用のデータあり）。不要なら `docker compose down -v` |
-| その他 | ローカルに検証用のイメージ `nicolaka/netshoot:v0.13` が残っている（不要なら削除してよい） |
+| アプリのリポジトリ | **公開**。`feature/primary-writes-and-models` の `5fe6027` まで push 済み（MIT ライセンスを含む）。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`）。既定のブランチは `dev`。ルールセット: 4 ブランチとも PR 必須、`staging`・`prod`・`main` はマージコミットのみ。未コミットの変更なし |
+| cdktn のリポジトリ | **公開**。`main` の `3d2f013` まで push 済み（MIT ライセンスを含む）。**未コミット（2026-10-18）**: サンプル 2 つ（ECS `worker-service`、Cloud Run `web-service-standalone`）を `build: false`、それに合わせたテストの修正、ALB の Blue/Green のルールの `ignore_changes: ["action"]`、手順書（Google の `roles/secretmanager.admin`、VM のサインインの注意点、API のパスワードは全クラウド同じ値）。jest 197 件成功 |
+| cdktn の設定 | 3 クラウドとも `dbs`・`containers`・`cicd`・`vms` が有効、`useVpn`・`hostZones` は無効。`apiContainerConfig`: `topology` は dev `independent`（各クラウドが単体）、`azureSecretReady`・`readinessProbe`・`journalPrune.enabled` は `false`。AWS の DB は Aurora（RDS は `build: false`） |
+| クラウド | 2026-10-18 に dev を構築（246 リソース）して一部を検証した後、**ユーザーが destroy する**（§8.5）。次回はもう一度構築から |
+| ローカル | compose の 3 ノードが起動中（プライマリ aws）。検証用イメージ `nicolaka/netshoot:v0.13` が残っている。退避した古い証明書（流出した鍵）が `/tmp/claude-1000/-mnt-dev-data-multicloud-dev-src/8ef6c963-6b3f-4a26-a463-117173986007/scratchpad/old-certs` にある（§8.4） |
 
 ### 8.2 残作業（順番）
 
 | # | 作業 | 場所 | 承認・判断 | 関連 |
 |---|---|---|---|---|
-| 1 | ~~API コンテナの環境変数とシークレット参照~~ 実装済み | cdktn | — | API-02 |
-| 2 | ~~getting-started のシークレットの手順~~ 完了 | アプリ | — | API-17 |
-| 3 | ~~cdktn の失敗しているテスト~~ 修正済み | cdktn | — | — |
-| 3a | ~~アプリ用のデータベースの作り方~~ 実装済み（b 案） | アプリ | — | API-18 |
-| 3b | AWS は Aurora を使う（2026-10-17 決定。`config/apicontainer.ts` の AWS の接続先を `aurora-postgres.aws.inner` に変更済み）。cdktn の RDS インスタンス（`rds-postgres-instance`）は `build: false` にした（2026-10-17。RDS 用の CloudWatch のロググループ 2 つは空のまま残る） | cdktn | — | — |
-| 4 | dev 環境を構築（`cdktn diff` → `cdktn deploy`。`topology` は `independent`、`useVpn`・`hostZones` は無効のまま、`azureSecretReady`・`readinessProbe` は `false`）。Azure の DevOpsInfrastructure のオブジェクト ID（`.env.dev`）が設定済みか確認 | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
-| 5 | 作業用 VM からシークレットの値を入れる（`app_api` は 3 ストアに同じ値、`app_repl`）。その後 `azureSecretReady: true` で cdktn を deploy | VM・cdktn | — | API-08 |
-| 6 | マネージド DB の権限を確認（API-04）。他クラウドの DB への接続（API-03）は、クラスタにするとき（9a）に確認する | VM・クラウド | クラウドの DB への実行の承認 | API-03、API-04 |
-| 7 | DB の初回セットアップ（単体のクラウドごとに `NODES=<cloud>` で。`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`） | VM | クラウドの DB への実行の承認 | API-01 |
-| 8 | 最初のリリース（その後 `readinessProbe: true` で cdktn を deploy）: feature ブランチを PR で `dev` にマージし、3クラウドで `/healthz`（同じ版）・`/readyz`・ログ（各クラウドが自分をプライマリとする `Primary: <cloud> (epoch 1)`）・読み書きを確認。単体構成なので、データはクラウドごとに別々。プライマリ以外のクラウドからの書き込みの確認は 9a で行う（`docs/operations.md` のリリース手順の初回の実施） | GitHub・クラウド | マージの承認 | §2 |
-| 9 | RTT と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` と接続数の想定を確認 | dev | — | API-05、API-06 |
-| 9a | VPN とプライベート DNS を有効にし、他クラウドの DB への接続を確認（API-03）した上で、`topology` を `cluster` にして、クラスタとしてテストする（単体のときのデータは1クラウド分だけ残る。他のノードはリセットしてから `replication-setup.sh`） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19 |
-| 10 | 運用手順のリハーサル（切り替え、強制切り替え、旧プライマリの復帰、パスワード変更、Azure 障害時の手順） | dev | クラウドの DB への実行の承認 | API-09 |
-| 11 | ~~変更履歴の削除のジョブ~~ 実装済み。最初のリリースの後に `journalPrune.enabled: true` で cdktn を deploy し、3クラウドで実行を確認する。deploy 時に確認すること: EventBridge Scheduler がリビジョンなしのタスク定義 ARN で最新を実行するか、`roles/run.invoker` でジョブを実行できるか、Cloud Scheduler API の有効化 | cdktn・クラウド | deploy の承認 | API-07 |
-| 12 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |
-| 13 | P3 の課題 | アプリ | 実施の判断 | API-10〜13 |
+| 1 | **dev 環境を構築**: `cdktn diff` で内容を確認 → `cdktn deploy`。設定は §8.1 のまま（単体構成、VPN・DNS なし）。2026-10-18 に一度構築済み（§8.5）。次回の前に、cdktn の未コミットの変更（ALB の修正を含む）をコミットしておく。Google の cdktn のサービスアカウントには `roles/secretmanager.admin` を付与済み | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
+| 2 | シークレットの値を入れる（`db-api-password` は 3 クラウドとも同じ値。手順は cdktn の operations.md「Secrets」）。AWS と Google は Cloud Shell からでも入れられる（2026-10-18 に確認）。Azure の Key Vault は VNet からしか接続できないため、Azure の VM（Bastion を有効にして接続）から入れる。その後 `azureSecretReady: true` にして cdktn を deploy | VM・Cloud Shell・cdktn | — | API-08 |
+| 3 | マネージド DB の権限を確認（`CREATE DATABASE`、組み込みロケール `C.UTF-8`、`pg_replication_origin_status`、`pg_terminate_backend`、`subconninfo`） | VM | クラウドの DB への実行の承認 | API-04 |
+| 4 | DB の初回セットアップを、単体のクラウドごとに `NODES=<cloud>` で実行: `database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `switchover.sh <cloud>`（`replication-setup.sh` は単体では何もしない） | VM | クラウドの DB への実行の承認 | API-01、API-18 |
+| 5 | **最初のリリース**: feature ブランチを PR で `dev` にマージ（`docs/operations.md` のリリース手順の初回）。3 クラウドで `/healthz`（同じ版）・`/readyz`・ログ（`Primary: <cloud> (epoch 1)`）・読み書きを確認 | GitHub・クラウド | マージの承認 | §2 |
+| 6 | `readinessProbe: true` と `journalPrune.enabled: true` にして cdktn を deploy。3 クラウドで削除ジョブの実行を確認 | cdktn・クラウド | deploy の承認 | API-16、API-07 |
+| 7 | 書き込み時間・同時書き込みの実測（単体構成で可能な範囲） | dev | — | API-05、API-06 |
+| 8 | **クラスタとしてテスト**: `useVpn`・`hostZones` を有効にし、他クラウドの DB への接続を確認（API-03）、`topology` を `cluster` にして deploy。データを残すクラウドを1つ決め、他のノードはリセットしてから `replication-setup.sh`。往復時間と書き込み時間を実測（API-05） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19、API-03、API-05 |
+| 9 | 運用手順のリハーサル（計画的な切り替え、強制切り替え、旧プライマリの復帰、パスワード変更、Azure 障害時に AWS / Google の VM から切り替える手順） | dev | クラウドの DB への実行の承認 | API-09 |
+| 10 | 監視と通知（削除ジョブの失敗、レプリケーションの遅延・停止、スロットの WAL 蓄積）。cdktn の FEAT-03 と合わせて設計 | cdktn・アプリ | 設計の承認 | API-20 |
+| 11 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |
+| 12 | P3 の課題（MySQL 対応、変更履歴からの修復、名前付きクエリの検証、`compose.yaml` のコメント） | アプリ | 実施の判断 | API-10〜13 |
 
-### 8.3 ユーザーの回答待ち
+### 8.3 deploy のときに確認すること（未検証の前提）
 
-| # | 内容 | 関連 |
+| 対象 | 確認すること | 関連 |
 |---|---|---|
-| 1 | 次の作業（§8.2 の 4: dev 環境の構築）に進む時期。課金を伴う | — |
+| Azure | Container Apps から、プライベートエンドポイントだけの Key Vault のシークレットを読めるか。Container Apps の環境から Azure の DB の FQDN を解決できるか | API-02、API-19 |
+| Google | Cloud Run の startup probe の待ち時間（最大 2 分）で足りるか。`roles/run.invoker` で Cloud Run ジョブを実行できるか | API-02、API-07 |
+| AWS | EventBridge Scheduler が、リビジョンなしのタスク定義 ARN で最新のリビジョンを実行するか | API-07 |
+| 3 クラウド | 新しい証明書（Google のロードバランサー、Azure の Application Gateway の PFX）が受け付けられるか | — |
+
+### 8.4 ユーザーの作業（任意・後片付け）
+
+| 内容 | コマンド・場所 |
+|---|---|
+| 退避した古い証明書（流出した鍵）の削除 | `rm -rf /tmp/claude-1000/-mnt-dev-data-multicloud-dev-src/8ef6c963-6b3f-4a26-a463-117173986007/scratchpad/old-certs` |
+| 検証用イメージの削除 | `docker rmi nicolaka/netshoot:v0.13` |
+| ローカルの compose 環境の停止 | `cd /mnt/dev_data/multicloud_dev/src/multicloud_api_apps && docker compose down -v` |
+| GitHub のメールアドレスの保護（設定済みなら不要） | https://github.com/settings/emails の「Keep my email addresses private」「Block command line pushes that expose my email」 |
+| 他の環境の git の設定 | `git config --global user.email "3047545+Otazoman@users.noreply.github.com"`。書き換え前に clone した環境（両リポジトリ）は取り直す |
+
+### 8.5 2026-10-18 の dev 構築の記録
+
+| 項目 | 内容 |
+|---|---|
+| 構築 | `cdktn diff`（253 → サンプル 2 つを外して 246 リソース）→ `cdktn deploy`。DB の管理者パスワードは公開されているサンプルの値と同じだが、検証用としてそのまま使う（ユーザー判断） |
+| 1 回目のエラー | Google: `Permission 'secretmanager.secrets.setIamPolicy' denied`（Cloud Run の実行用のサービスアカウントにシークレットの読み取り権限を付けるところ）。cdktn のサービスアカウントに `roles/secretmanager.admin` が必要だった。ユーザーが付与し、cdktn の getting-started（英・日）の権限の一覧に追記 |
+| 2 回目 | 成功（6 追加、9 変更、1 作り直し）。変更は、ALB のリスナーのルール、Azure の Container Apps・サブネット・DevOps のプール・パイプライン、Google の VM など、deploy のたびに差分が出る設定（クラウド側が補う値と cdktn の設定のずれ）。データへの影響はない。毎回出る差分の整理は未対応 |
+| 入口の応答 | Google（`34.104.187.13`）と Azure（`20.222.21.118`）は仮のイメージが 200。**AWS の ALB は 503** |
+| AWS の 503 の原因（見立て） | ECS の Blue/Green が書き換えた ALB の優先度 1 のルールの転送先を、2 回目の deploy で Terraform が最初のターゲットグループに戻した。**修正（未コミット）**: `constructs/loadbalancer/awsalb.ts` で、このルールに `ignore_changes: ["action"]`。ターゲットグループの状態での確認はできていない（次回の構築で、修正後に deploy を 2 回行っても 503 にならないことを確認する） |
+| シークレット | AWS と Google は Cloud Shell から入れた（VM ではサインインの手順でつまずいた: AWS は `--remote` が必要、Google は VM の既定のサービスアカウントのスコープ不足。cdktn の operations.md に注意点を追記）。Azure は Bastion を有効にしてから。destroy でシークレットの値も消えるので、次回の構築後に入れ直す |
+| 手順書の不備（修正済み・未コミット） | cdktn の operations.md「Secrets」が、各 VM で別々のパスワードを作る手順になっていた（API のパスワードは全クラウド同じ値、の決定と不一致）。最初の VM で作り、他の VM には同じ値を入れる手順に修正 |
+| その他 | この環境には AWS・Google・Azure の CLI がない。クラウドの状態の確認は、ユーザーの Cloud Shell や VM で行う |
+
+### 8.6 ユーザーの回答待ち
+
+| # | 内容 |
+|---|---|
+| 1 | cdktn の未コミットの変更（ALB の修正など）と、このファイルの追記のコミット・push |
+| 2 | 次回の dev の構築の時期（Azure は Bastion を有効にしてシークレットを入れる）。課金を伴う |
