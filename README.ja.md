@@ -32,7 +32,7 @@ AWS・Google Cloud・Azure に **アクティブ/アクティブ** でデプロ�
 | `generated/`                                            | `npm run generate` が書き出す `schema.graphql`（編集しない）         |
 | `__tests__/`                                            | ユニットテスト（Jest。データベース不要）                             |
 | `migrations/`                                           | SQL マイグレーション（手書き・生成）と `models.snapshot.json`。`scripts/migrate.sh` で全ノードに適用 |
-| `scripts/`                                              | DB スクリプト：マイグレーション、API ロール、レプリケーション設定/確認 |
+| `scripts/`                                              | DB スクリプト：データベース、マイグレーション、API ロール、レプリケーション設定/確認、切り替え。`node-setup.sh` はクラウド単体を1つのコマンドでセットアップ |
 | `replication/`                                          | スクリプト用のノード設定（`nodes.local.env` は compose 用）          |
 | `compose.yaml`                                          | ローカル環境：PostgreSQL 3 ノード＋ノードごとの API                  |
 | `Dockerfile`                                            | API のコンテナイメージ                                               |

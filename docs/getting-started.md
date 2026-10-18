@@ -13,11 +13,14 @@ environment and local testing, see the [README](../README.md).
 | 2 | Set the API password secret on every cloud (the same value) | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Infrastructure operations, "Secrets" |
 | 3 | Azure: `azureSecretReady: true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Secrets" |
 | 4 | Set up the databases | Each cloud's VM (the databases are private) | Sections 2–3 below |
-| 5 | Deploy the API: merge into the environment's branch | GitHub (pull request); each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
+| 5 | Deploy the API: merge into the environment's branch; right after the infrastructure is built (nothing new to merge), run each cloud's pipeline once | GitHub (pull request) or each cloud's console / CLI; each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
 | 6 | Verify | Your machine | Section 6 |
-| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure configuration, "API container" |
+| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Build an environment" (step 6) |
 
 Steps 1–3 build the infrastructure; from step 4 on it is this repository's work.
+`cdktn deploy` runs three times: steps 1, 3 and 7 (the infrastructure
+operations, "Build an environment", explains why). Later releases need only
+the merge.
 
 ## 1. Prerequisites
 
@@ -89,6 +92,29 @@ export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
 export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
 ```
 
+For a cluster, run the scripts on the Azure VM (the only place that can
+read the Key Vault), signed in to every cloud's CLI (infrastructure
+operations, "Secrets"), and read the values from the secret stores:
+
+```bash
+export NODE_AWS_API_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
+export NODE_GOOGLE_API_PASSWORD="$NODE_AWS_API_PASSWORD" NODE_AZURE_API_PASSWORD="$NODE_AWS_API_PASSWORD"
+export NODE_AWS_REPL_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
+export NODE_GOOGLE_REPL_PASSWORD="$(gcloud secrets versions access latest \
+  --secret=multicloud-google-secret-db-repl-password)"
+export NODE_AZURE_REPL_PASSWORD="$(az keyvault secret show --vault-name multicloud-kv-001 \
+  --name db-repl-password --query value --output tsv)"
+# Database admin passwords (.env.<env> of the infrastructure): typed, not echoed
+for n in AWS GOOGLE AZURE; do
+  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo && export "NODE_${n}_ADMIN_PASSWORD=$v"
+done
+```
+
+Leave out the clouds that are not in the cluster, and sign out of the
+clouds when done.
+
 The API and replication passwords are chosen by you:
 
 - **API (`app_api`): one password for every node.** Every API connects to
@@ -151,7 +177,22 @@ It asks for what it cannot find:
 Sign in to the cloud's CLI on the VM first (infrastructure operations,
 "Secrets") to have the address, the admin user (AWS, Azure) and the API
 password read from the cloud. It prints `Done: <cloud> runs alone ...` at
-the end and is safe to run again.
+the end and is safe to run again (e.g. for the migrations of a new release).
+
+What it does:
+
+| Step | Detail |
+| --- | --- |
+| Look up | AWS: the Aurora cluster endpoint and master user, the `multicloud-aws-secret-db-api-password` secret. Google Cloud: the private IP of the only PostgreSQL Cloud SQL instance, the `multicloud-google-secret-db-api-password` secret. Azure: the FQDN and admin login of the only PostgreSQL flexible server of `rg_multicloud`, the `db-api-password` secret of `multicloud-kv-001`. A value that cannot be read is asked for; a secret still at its dummy value stops it |
+| Settings | A temporary node settings file without passwords (`NODES=<cloud>`, `appdb`, `app_api`, SSL `require`), deleted at the end; the passwords stay in the environment of the process |
+| Scripts | `database-create.sh`, `migrate.sh`, `api-role-setup.sh`, `switchover.sh <cloud>`, `replication-status.sh` for that node |
+
+The names default to the infrastructure's dev environment. Override them in
+the environment when they differ: `AWS_REGION`, `AWS_DB_CLUSTER`,
+`AWS_API_SECRET`, `GOOGLE_SQL_INSTANCE`, `GOOGLE_API_SECRET`,
+`AZURE_RESOURCE_GROUP`, `AZURE_DB_SERVER`, `AZURE_KEY_VAULT`,
+`AZURE_API_SECRET` (e.g. `AZURE_KEY_VAULT=multicloud-kv-001-stg
+scripts/node-setup.sh azure`).
 
 ### Status
 
@@ -204,6 +245,23 @@ a new revision:
   does not become stable)
 - Google Cloud: Cloud Build → Artifact Registry → Cloud Run
 - Azure: Azure Pipelines → ACR → Container Apps
+
+Right after the infrastructure is built (also after a destroy), the
+registries are empty and the containers run placeholder images, but the
+branch has no new commit to merge. Run each cloud's pipeline once on the
+environment's branch instead (the names are the infrastructure's dev
+defaults, set in its CI/CD configuration):
+
+```bash
+# AWS (CloudShell)
+aws codebuild start-build --project-name api-service-cicd --source-version dev --region ap-northeast-1
+# Google Cloud (Cloud Shell)
+gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch=dev
+```
+
+Azure: in Azure DevOps, open the pipeline `multicloud-api-deploy`, **Run
+pipeline**, branch `dev`. Use the same commands to run one cloud's build
+again (e.g. after it failed).
 
 ## 6. Verify
 
