@@ -13,11 +13,14 @@ environment and local testing, see the [README](../README.md).
 | 2 | Set the API password secret on every cloud (the same value) | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Infrastructure operations, "Secrets" |
 | 3 | Azure: `azureSecretReady: true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Secrets" |
 | 4 | Set up the databases | Each cloud's VM (the databases are private) | Sections 2–3 below |
-| 5 | Deploy the API: merge into the environment's branch | GitHub (pull request); each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
+| 5 | Deploy the API: merge into the environment's branch; right after the infrastructure is built (nothing new to merge), run each cloud's pipeline once | GitHub (pull request) or each cloud's console / CLI; each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
 | 6 | Verify | Your machine | Section 6 |
-| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure configuration, "API container" |
+| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Build an environment" (step 6) |
 
 Steps 1–3 build the infrastructure; from step 4 on it is this repository's work.
+`cdktn deploy` runs three times: steps 1, 3 and 7 (the infrastructure
+operations, "Build an environment", explains why). Later releases need only
+the merge.
 
 ## 1. Prerequisites
 
@@ -242,6 +245,23 @@ a new revision:
   does not become stable)
 - Google Cloud: Cloud Build → Artifact Registry → Cloud Run
 - Azure: Azure Pipelines → ACR → Container Apps
+
+Right after the infrastructure is built (also after a destroy), the
+registries are empty and the containers run placeholder images, but the
+branch has no new commit to merge. Run each cloud's pipeline once on the
+environment's branch instead (the names are the infrastructure's dev
+defaults, set in its CI/CD configuration):
+
+```bash
+# AWS (CloudShell)
+aws codebuild start-build --project-name api-service-cicd --source-version dev --region ap-northeast-1
+# Google Cloud (Cloud Shell)
+gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch=dev
+```
+
+Azure: in Azure DevOps, open the pipeline `multicloud-api-deploy`, **Run
+pipeline**, branch `dev`. Use the same commands to run one cloud's build
+again (e.g. after it failed).
 
 ## 6. Verify
 

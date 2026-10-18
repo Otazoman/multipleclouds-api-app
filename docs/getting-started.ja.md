@@ -12,11 +12,12 @@
 | 2 | すべてのクラウドに API のパスワードのシークレットを入れる（同じ値） | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | インフラの operations の「シークレット」 |
 | 3 | Azure：`azureSecretReady: true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「シークレット」 |
 | 4 | データベースのセットアップ | 各クラウドの VM（データベースはプライベート） | 下の 2〜3 章 |
-| 5 | API のデプロイ：環境のブランチにマージ | GitHub（プルリクエスト）。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
+| 5 | API のデプロイ：環境のブランチにマージ。インフラを構築した直後（マージするものがない）は、各クラウドのパイプラインを 1 回実行 | GitHub（プルリクエスト）、または各クラウドのコンソール / CLI。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
 | 6 | 確認 | 自分の端末 | 6 章 |
-| 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの設定の説明の「API コンテナ」 |
+| 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 6） |
 
 1〜3 がインフラの構築で、4 からがこのリポジトリの作業です。
+`cdktn deploy` は 1・3・7 の 3 回実行します（理由はインフラの operations の「環境を構築する」）。その後のリリースはマージだけです。
 
 ## 1. 前提条件
 
@@ -211,6 +212,20 @@ scripts/node-setup.sh aws               # Google・Azure の VM では google / 
 - AWS：CodeBuild → ECR → ECS Blue/Green（サービスが安定しなければビルドが失敗する）
 - Google Cloud：Cloud Build → Artifact Registry → Cloud Run
 - Azure：Azure Pipelines → ACR → Container Apps
+
+インフラを構築した直後（destroy の後も）は、レジストリが空でコンテナは仮のイメージで動いていますが、ブランチには
+マージする新しいコミットがありません。代わりに、各クラウドのパイプラインを環境のブランチで 1 回実行します（名前は
+インフラの dev の既定値で、インフラの CI/CD の設定で決まります）：
+
+```bash
+# AWS（CloudShell）
+aws codebuild start-build --project-name api-service-cicd --source-version dev --region ap-northeast-1
+# Google Cloud（Cloud Shell）
+gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch=dev
+```
+
+Azure：Azure DevOps でパイプライン `multicloud-api-deploy` を開き、**Run pipeline** でブランチ `dev` を指定します。
+1 つのクラウドのビルドをやり直すとき（失敗したときなど）も同じです。
 
 ## 6. 確認
 

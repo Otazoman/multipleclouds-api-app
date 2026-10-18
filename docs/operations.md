@@ -182,7 +182,8 @@ feature pull request), then stg (`dev` → `staging`), then prod (`staging`
    the APIs").
 
 4. If only some clouds failed, fix the cause and run their build again
-   (CodeBuild, Cloud Build trigger, Azure Pipelines): the old and new
+   (CodeBuild, Cloud Build trigger, Azure Pipelines; commands in
+   [getting-started.md](getting-started.md#5-deploy)): the old and new
    versions can run side by side while the migrations are additive.
 
 5. Before the next environment, check the changes in this one long enough
@@ -249,6 +250,27 @@ gh pr create --base dev --head staging --title "Back-merge hotfix" --body ""
 ```
 
 Merge these with a merge commit too, and record prod in `main` (section 3).
+
+## Logs and alerts
+
+The API and the journal pruning job write to standard output / error; each
+cloud keeps the logs (AWS CloudWatch Logs `/aws/ecs/api-service`, Google
+Cloud Logging for the Cloud Run service and job, Azure Log Analytics
+`ContainerAppConsoleLogs`). The infrastructure repository creates alerts on
+them and on the load balancers' 5xx, sent to `ALERT_EMAILS` (its operations
+guide, "Alerting").
+
+| Log line | Meaning | What to do |
+| --- | --- | --- |
+| `Readiness check failed: migrations not applied: <versions>` | The database lacks migrations of this version; the platform keeps the old version serving | Run `scripts/migrate.sh` (or `scripts/node-setup.sh <cloud>`) on that cloud ("Releases") |
+| `Readiness check failed: <connection error>` | The API cannot reach or log in to its database | Check the database, `DB_*`, and that the `db-api-password` secret matches the `app_api` password (`scripts/api-role-setup.sh`) |
+| `Idle connection to <host> failed` | A pooled connection to a node broke (e.g. another cloud is down) | Usually transient; if it repeats, check that node ("Cloud outage") |
+| `Journal pruning failed: <reason>` | The daily journal pruning job failed | Check the reason; `No reachable primary` means no node could be read (check the primary and `scripts/switchover.sh`). Prune by hand with `scripts/journal-prune.sh` ("Write journal") |
+| `Primary: <node> (epoch N)` | The API found the primary (not an error) | — |
+
+A 5xx alert of a load balancer usually comes with readiness failures (no
+healthy API) or with errors of the API in the same period: start from the
+API's logs.
 
 ## Monitoring replication
 

@@ -160,7 +160,7 @@ gh pr create --base dev --title "<変更内容>" --body "<理由、マイグレ�
    プライマリ以外のクラウドの API からの書き込みも確認します（README の「API を確認する」）。
 
 4. 一部のクラウドだけ失敗した場合は、原因を直してそのクラウドのビルドを再実行します（CodeBuild、
-   Cloud Build のトリガー、Azure Pipelines）。マイグレーションが追加のみの間は、新旧の版が混在しても動きます。
+   Cloud Build のトリガー、Azure Pipelines。コマンドは [getting-started.ja.md](getting-started.ja.md#5-デプロイ)）。マイグレーションが追加のみの間は、新旧の版が混在しても動きます。
 
 5. 次の環境に進む前に、この環境で変更を十分に確認します（機能、性能、ログ）。
 
@@ -219,6 +219,24 @@ gh pr create --base dev --head staging --title "Back-merge hotfix" --body ""
 ```
 
 これらもマージコミットでマージし、prod を `main` に記録します（3）。
+
+## ログとアラート
+
+API と変更履歴の削除ジョブは、標準出力・標準エラーにログを出します。各クラウドがログを保存します（AWS は CloudWatch Logs の
+`/aws/ecs/api-service`、Google は Cloud Run のサービスとジョブの Cloud Logging、Azure は Log Analytics の
+`ContainerAppConsoleLogs`）。インフラのリポジトリが、これらのログとロードバランサーの 5xx にアラートを作り、`ALERT_EMAILS` に
+通知します（そのリポジトリの operations の「アラート」）。
+
+| ログ | 意味 | 対処 |
+| --- | --- | --- |
+| `Readiness check failed: migrations not applied: <バージョン>` | データベースにこの版のマイグレーションが足りない。コンテナ基盤は古い版でサービスを続ける | そのクラウドで `scripts/migrate.sh`（または `scripts/node-setup.sh <cloud>`）を実行する（「リリース」） |
+| `Readiness check failed: <接続のエラー>` | API がデータベースに接続・ログインできない | データベース、`DB_*`、シークレット `db-api-password` が `app_api` のパスワードと一致するか（`scripts/api-role-setup.sh`）を確認する |
+| `Idle connection to <host> failed` | あるノードへのプールの接続が切れた（他のクラウドの障害など） | 多くは一時的。繰り返すならそのノードを確認する（「クラウド障害」） |
+| `Journal pruning failed: <理由>` | 毎日の変更履歴の削除ジョブが失敗した | 理由を確認する。`No reachable primary` はどのノードも読めなかったということ（プライマリと `scripts/switchover.sh` を確認）。手動で削除するには `scripts/journal-prune.sh`（「変更履歴（ジャーナル）」） |
+| `Primary: <node> (epoch N)` | API がプライマリを見つけた（エラーではない） | — |
+
+ロードバランサーの 5xx のアラートは、多くの場合、同じ時間帯の readiness の失敗（正常な API がない）や API のエラーと一緒に
+起きます。まず API のログから確認してください。
 
 ## レプリケーションの監視
 
