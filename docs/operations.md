@@ -77,6 +77,26 @@ cloud must show the same.
 
 The examples use the GitHub CLI (`gh`); the same can be done on github.com.
 
+### 0. After cloning (once per clone)
+
+The branches `dev`, `staging`, `prod` and `main` already exist on GitHub
+(with their branch rules): do not create them again. A clone only needs:
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git
+cd multipleclouds-api-app
+# Commits must not publish your private email (GitHub rejects such pushes)
+git config user.email "<id>+<user>@users.noreply.github.com"   # your GitHub noreply address
+gh auth login                  # for gh pr create / gh pr merge (once per machine)
+git switch dev                 # the clone starts on dev (the default branch)
+```
+
+`git switch staging` (or `prod`, `main`) creates a local branch tracking
+GitHub's when you need to look at it; promotions do not need local branches,
+since their pull requests are made between GitHub's branches
+(`gh pr create --base staging --head dev`). Never push to these branches
+directly: the branch rules refuse it.
+
 ### 1. Develop locally
 
 ```bash

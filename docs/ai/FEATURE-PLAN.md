@@ -162,14 +162,14 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | アプリのリポジトリ | **公開**。`feature/primary-writes-and-models` に最新まで push 済み（MIT ライセンスを含む）。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`）。既定のブランチは `dev`。ルールセット: 4 ブランチとも PR 必須、`staging`・`prod`・`main` はマージコミットのみ。未コミットの変更なし |
 | cdktn のリポジトリ | **公開**。`main` の `f489037` まで push 済み（MIT ライセンスと、2026-10-18 の次の変更を含む）: サンプル 2 つ（ECS `worker-service`、Cloud Run `web-service-standalone`）を `build: false`、それに合わせたテストの修正、ALB の Blue/Green のルールの `ignore_changes: ["action"]`、手順書（Google の `roles/secretmanager.admin`、VM のサインインの注意点、API のパスワードは全クラウド同じ値）。jest 197 件成功 |
 | cdktn の設定 | 3 クラウドとも `dbs`・`containers`・`cicd`・`vms` が有効、`useVpn`・`hostZones` は無効。`apiContainerConfig`: `topology` は dev `independent`（各クラウドが単体）、`azureSecretReady`・`readinessProbe`・`journalPrune.enabled` は `false`。AWS の DB は Aurora（RDS は `build: false`） |
-| クラウド | 2026-10-18 に dev を構築（246 リソース）して一部を検証した後、**ユーザーが destroy する**（§8.5）。次回はもう一度構築から |
+| クラウド | 2026-10-18 に dev を再構築し、**単体構成での最初のリリースに成功**（§8.5）。その後ユーザーが destroy。次回は構築からやり直す |
 | ローカル | compose の 3 ノードが起動中（プライマリ aws）。検証用イメージ `nicolaka/netshoot:v0.13` が残っている。退避した古い証明書（流出した鍵）が `/tmp/claude-1000/-mnt-dev-data-multicloud-dev-src/8ef6c963-6b3f-4a26-a463-117173986007/scratchpad/old-certs` にある（§8.4） |
 
 ### 8.2 残作業（順番）
 
 | # | 作業 | 場所 | 承認・判断 | 関連 |
 |---|---|---|---|---|
-| 1 | **dev 環境を構築**: `cdktn diff` で内容を確認 → `cdktn deploy`。設定は §8.1 のまま（単体構成、VPN・DNS なし）。2026-10-18 に一度構築済み（§8.5）。ALB の修正は push 済み（`f489037`）。Google の cdktn のサービスアカウントには `roles/secretmanager.admin` を付与済み | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
+| 1 | ~~dev 環境を構築~~ **単体構成で手順 1〜5（インフラの構築、シークレット、`azureSecretReady`、DB のセットアップ、リリース、確認）を完了（2026-10-18、§8.5）**。次回の構築は、cdktn の operations.md「環境を構築する」とアプリの getting-started「全体の流れ」に沿って行う。事前に `.env.dev` に `AZURE_KEYVAULT_SECRETS_OFFICER_IDS` を書いて cdktn のコンテナを作り直す。Cloud SQL のインスタンス名を変える | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
 | 2 | シークレットの値を入れる（`db-api-password` は 3 クラウドとも同じ値。手順は cdktn の operations.md「Secrets」）。AWS と Google は Cloud Shell からでも入れられる（2026-10-18 に確認）。Azure の Key Vault は VNet からしか接続できないため、Azure の VM（Bastion を有効にして接続）から入れる。その後 `azureSecretReady: true` にして cdktn を deploy | VM・Cloud Shell・cdktn | — | API-08 |
 | 3 | マネージド DB の権限を確認（`CREATE DATABASE`、組み込みロケール `C.UTF-8`、`pg_replication_origin_status`、`pg_terminate_backend`、`subconninfo`） | VM | クラウドの DB への実行の承認 | API-04 |
 | 4 | DB の初回セットアップを、単体のクラウドごとに `NODES=<cloud>` で実行: `database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `switchover.sh <cloud>`（`replication-setup.sh` は単体では何もしない） | VM | クラウドの DB への実行の承認 | API-01、API-18 |
@@ -214,8 +214,21 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 手順書の不備（修正済み） | cdktn の operations.md「Secrets」が、各 VM で別々のパスワードを作る手順になっていた（API のパスワードは全クラウド同じ値、の決定と不一致）。最初の VM で作り、他の VM には同じ値を入れる手順に修正 |
 | その他 | この環境には AWS・Google・Azure の CLI がない。クラウドの状態の確認は、ユーザーの Cloud Shell や VM で行う |
 
+### 8.5.1 2026-10-18 の再構築とリリースの記録
+
+| 項目 | 内容 |
+|---|---|
+| 構築 | ユーザーが Cloud SQL の名前を変えて deploy。1 回目は AWS の CodeBuild のプロジェクトの作成で `OAuthProviderException`（GitHub 接続の権限。直前に作られたサービスロールの権限が IAM に反映される前と推定）、再実行で成功。再発するなら `time_sleep` で待つ案（未実施） |
+| シークレット | AWS・Google は Cloud Shell、Azure は VM から。Azure は Key Vault の書き込み権限がなく `ForbiddenByRbac`。cdktn が `.env.<env>` の `AZURE_KEYVAULT_SECRETS_OFFICER_IDS`（オブジェクト ID、カンマ区切り）から権限を付けるように変更（コンテナの起動時に読むので、値を足したらコンテナを作り直す。環境の準備の段階で一度書けばよい）。今回は Cloud Shell で手作業で付与（Key Vault と一緒に削除される） |
+| `azureSecretReady` | dev だけ `true` にして deploy（2 回目）。**AWS の ALB は 2 回目の deploy の後も 200: ALB の修正の効果を確認**。その後、次回の構築に備えて `false` に戻した |
+| DB のセットアップ | 手作業（`nodes.env` と 5 つのスクリプト）が複雑だったため、`scripts/node-setup.sh <cloud>` を追加（クラウドの CLI から接続先・管理者・API のパスワードを読み、足りない値だけ聞いて 5 つのスクリプトを実行）。あわせて `lib.sh` の不具合を修正（`SSLMODE`・`PORT` の既定値が空の値に効かず、`invalid sslmode value: ""`。手作業の手順でも VM で起きていた）。3 クラウドとも成功 |
+| リリース | PR #1（feature → `dev`）をマージ（`41c07e6`）。約 5 分で 3 クラウドとも新しい版に切り替わった（ビルド時のテストも通過） |
+| 確認 | 3 クラウドで `/healthz`（同じ版）・`/readyz`（200）・書き込み・読み取り・冪等キーの再送（同じ ID）。各クラウドに `dev-check-<cloud>` を 1 件。**確認できた前提**: Container Apps がプライベートエンドポイントの Key Vault のシークレットを読める、Container Apps の環境から Azure の DB の FQDN を解決できる |
+| 手順書の整理 | cdktn の operations.md に「環境を構築する」（インフラだけ。Azure の 2 回 deploy の理由を含む）。DB のスクリプトの手順（クラスタのパスワードの集め方）はアプリの getting-started に移した。アプリの getting-started に「全体の流れ」と `node-setup.sh` の説明 |
+| 次回 | 手順 6（`readinessProbe`・`journalPrune.enabled` を `true`、削除ジョブの確認。Google は Cloud Scheduler API の有効化を確認）、実測、クラスタ化（§8.2） |
+
 ### 8.6 ユーザーの回答待ち
 
 | # | 内容 |
 |---|---|
-| 1 | 次回の dev の構築の時期（Azure は Bastion を有効にしてシークレットを入れる）。課金を伴う |
+| 1 | 次回の dev の構築の時期（手順 6 以降の検証）。課金を伴う |

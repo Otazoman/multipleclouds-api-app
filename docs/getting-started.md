@@ -89,6 +89,29 @@ export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
 export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
 ```
 
+For a cluster, run the scripts on the Azure VM (the only place that can
+read the Key Vault), signed in to every cloud's CLI (infrastructure
+operations, "Secrets"), and read the values from the secret stores:
+
+```bash
+export NODE_AWS_API_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
+export NODE_GOOGLE_API_PASSWORD="$NODE_AWS_API_PASSWORD" NODE_AZURE_API_PASSWORD="$NODE_AWS_API_PASSWORD"
+export NODE_AWS_REPL_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
+export NODE_GOOGLE_REPL_PASSWORD="$(gcloud secrets versions access latest \
+  --secret=multicloud-google-secret-db-repl-password)"
+export NODE_AZURE_REPL_PASSWORD="$(az keyvault secret show --vault-name multicloud-kv-001 \
+  --name db-repl-password --query value --output tsv)"
+# Database admin passwords (.env.<env> of the infrastructure): typed, not echoed
+for n in AWS GOOGLE AZURE; do
+  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo && export "NODE_${n}_ADMIN_PASSWORD=$v"
+done
+```
+
+Leave out the clouds that are not in the cluster, and sign out of the
+clouds when done.
+
 The API and replication passwords are chosen by you:
 
 - **API (`app_api`): one password for every node.** Every API connects to
@@ -151,7 +174,22 @@ It asks for what it cannot find:
 Sign in to the cloud's CLI on the VM first (infrastructure operations,
 "Secrets") to have the address, the admin user (AWS, Azure) and the API
 password read from the cloud. It prints `Done: <cloud> runs alone ...` at
-the end and is safe to run again.
+the end and is safe to run again (e.g. for the migrations of a new release).
+
+What it does:
+
+| Step | Detail |
+| --- | --- |
+| Look up | AWS: the Aurora cluster endpoint and master user, the `multicloud-aws-secret-db-api-password` secret. Google Cloud: the private IP of the only PostgreSQL Cloud SQL instance, the `multicloud-google-secret-db-api-password` secret. Azure: the FQDN and admin login of the only PostgreSQL flexible server of `rg_multicloud`, the `db-api-password` secret of `multicloud-kv-001`. A value that cannot be read is asked for; a secret still at its dummy value stops it |
+| Settings | A temporary node settings file without passwords (`NODES=<cloud>`, `appdb`, `app_api`, SSL `require`), deleted at the end; the passwords stay in the environment of the process |
+| Scripts | `database-create.sh`, `migrate.sh`, `api-role-setup.sh`, `switchover.sh <cloud>`, `replication-status.sh` for that node |
+
+The names default to the infrastructure's dev environment. Override them in
+the environment when they differ: `AWS_REGION`, `AWS_DB_CLUSTER`,
+`AWS_API_SECRET`, `GOOGLE_SQL_INSTANCE`, `GOOGLE_API_SECRET`,
+`AZURE_RESOURCE_GROUP`, `AZURE_DB_SERVER`, `AZURE_KEY_VAULT`,
+`AZURE_API_SECRET` (e.g. `AZURE_KEY_VAULT=multicloud-kv-001-stg
+scripts/node-setup.sh azure`).
 
 ### Status
 

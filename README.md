@@ -32,7 +32,7 @@ databases replicate to each other with bidirectional logical replication.
 | `generated/`                                            | `schema.graphql`, written by `npm run generate` (do not edit)      |
 | `__tests__/`                                            | Unit tests (Jest; no database needed)                              |
 | `migrations/`                                           | SQL migrations (hand-written or generated) and `models.snapshot.json`, applied to every node by `scripts/migrate.sh` |
-| `scripts/`                                              | Database scripts: migrations, API role, replication setup / status |
+| `scripts/`                                              | Database scripts: database, migrations, API role, replication setup / status, switchover; `node-setup.sh` sets up a cloud alone in one command |
 | `replication/`                                          | Node settings for the scripts (`nodes.local.env` is for compose)   |
 | `compose.yaml`                                          | Local environment: three PostgreSQL nodes + one API per node       |
 | `Dockerfile`                                            | API container image                                                |

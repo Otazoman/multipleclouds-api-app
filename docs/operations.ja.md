@@ -65,6 +65,24 @@ rebase ではブランチの履歴が別々になり、次の昇格で衝突し�
 
 例では GitHub CLI（`gh`）を使います。github.com の画面でも同じことができます。
 
+### 0. clone の後（clone ごとに一度）
+
+`dev`・`staging`・`prod`・`main` のブランチは GitHub に作成済みです（ブランチのルールも設定済み）。作り直さないで
+ください。clone した後に必要なのは次の作業だけです：
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git
+cd multipleclouds-api-app
+# コミットで個人のメールアドレスを公開しない（GitHub がそのような push を拒否します）
+git config user.email "<ID>+<ユーザー名>@users.noreply.github.com"   # 自分の GitHub の noreply アドレス
+gh auth login                  # gh pr create / gh pr merge 用（端末ごとに一度）
+git switch dev                 # clone は dev（既定のブランチ）から始まる
+```
+
+`staging`（`prod`、`main`）を見たいときは、`git switch staging` で GitHub のブランチを追跡する手元のブランチが
+作られます。昇格のプルリクエストは GitHub のブランチ同士で作るので（`gh pr create --base staging --head dev`）、
+手元のブランチは不要です。これらのブランチに直接 push しないでください（ブランチのルールが拒否します）。
+
 ### 1. ローカルで開発する
 
 ```bash

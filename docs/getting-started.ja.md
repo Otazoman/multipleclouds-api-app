@@ -80,6 +80,27 @@ export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
 export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
 ```
 
+クラスタでは、Azure の VM（Key Vault を読める唯一の場所）で、すべてのクラウドの CLI にサインインして
+（インフラの operations の「シークレット」）、値をシークレットストアから読み出してスクリプトを実行します：
+
+```bash
+export NODE_AWS_API_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
+export NODE_GOOGLE_API_PASSWORD="$NODE_AWS_API_PASSWORD" NODE_AZURE_API_PASSWORD="$NODE_AWS_API_PASSWORD"
+export NODE_AWS_REPL_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+  --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
+export NODE_GOOGLE_REPL_PASSWORD="$(gcloud secrets versions access latest \
+  --secret=multicloud-google-secret-db-repl-password)"
+export NODE_AZURE_REPL_PASSWORD="$(az keyvault secret show --vault-name multicloud-kv-001 \
+  --name db-repl-password --query value --output tsv)"
+# DB の管理者パスワード（インフラの .env.<環境名>）：入力する（表示されない）
+for n in AWS GOOGLE AZURE; do
+  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo && export "NODE_${n}_ADMIN_PASSWORD=$v"
+done
+```
+
+クラスタに入らないクラウドの行は除き、終わったらクラウドからサインアウトします。
+
 API 用とレプリケーション用のパスワードは自分で決めます：
 
 - **API（`app_api`）：全ノードで1つのパスワード。** すべての API がすべてのノードに接続する（書き込みは
@@ -135,7 +156,19 @@ scripts/node-setup.sh aws               # Google・Azure の VM では google / 
 
 先に VM でそのクラウドの CLI にサインインしておくと（インフラの operations の「シークレット」）、接続先、管理者ユーザー
 （AWS、Azure）、API のパスワードをクラウドから読み取ります。最後に `Done: <cloud> runs alone ...` と表示されます。
-再実行して問題ありません。
+再実行して問題ありません（新しいリリースのマイグレーションの適用など）。
+
+処理の内容：
+
+| 段階 | 内容 |
+| --- | --- |
+| 読み取り | AWS：Aurora のクラスタのエンドポイントとマスターユーザー、シークレット `multicloud-aws-secret-db-api-password`。Google Cloud：唯一の PostgreSQL の Cloud SQL インスタンスのプライベート IP、シークレット `multicloud-google-secret-db-api-password`。Azure：`rg_multicloud` の唯一の PostgreSQL フレキシブル サーバーの FQDN と管理者ログイン、`multicloud-kv-001` のシークレット `db-api-password`。読み取れない値は入力を求める。シークレットがダミーの値のままなら止まる |
+| 設定 | パスワードを含まない一時的なノード設定（`NODES=<cloud>`、`appdb`、`app_api`、SSL は `require`）を作り、最後に削除する。パスワードはそのプロセスの環境変数にだけ置く |
+| スクリプト | そのノードについて `database-create.sh`、`migrate.sh`、`api-role-setup.sh`、`switchover.sh <cloud>`、`replication-status.sh` |
+
+名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します：`AWS_REGION`、`AWS_DB_CLUSTER`、
+`AWS_API_SECRET`、`GOOGLE_SQL_INSTANCE`、`GOOGLE_API_SECRET`、`AZURE_RESOURCE_GROUP`、`AZURE_DB_SERVER`、
+`AZURE_KEY_VAULT`、`AZURE_API_SECRET`（例：`AZURE_KEY_VAULT=multicloud-kv-001-stg scripts/node-setup.sh azure`）。
 
 ### 状態の確認
 
