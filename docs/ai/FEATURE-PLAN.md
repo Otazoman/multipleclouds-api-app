@@ -160,7 +160,7 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 対象 | 状態 |
 |---|---|
 | アプリのリポジトリ | **公開**。`feature/primary-writes-and-models` の `5fe6027` まで push 済み（MIT ライセンスを含む）。`dev`・`staging`・`prod`・`main` は最初のコミット群のまま（`cfe7426`）。既定のブランチは `dev`。ルールセット: 4 ブランチとも PR 必須、`staging`・`prod`・`main` はマージコミットのみ。未コミットの変更なし |
-| cdktn のリポジトリ | **公開**。`main` の `3d2f013` まで push 済み（MIT ライセンスを含む）。**未コミット（2026-10-18）**: サンプル 2 つ（ECS `worker-service`、Cloud Run `web-service-standalone`）を `build: false`、それに合わせたテストの修正、ALB の Blue/Green のルールの `ignore_changes: ["action"]`、手順書（Google の `roles/secretmanager.admin`、VM のサインインの注意点、API のパスワードは全クラウド同じ値）。jest 197 件成功 |
+| cdktn のリポジトリ | **公開**。`main` の `f489037` まで push 済み（MIT ライセンスと、2026-10-18 の次の変更を含む）: サンプル 2 つ（ECS `worker-service`、Cloud Run `web-service-standalone`）を `build: false`、それに合わせたテストの修正、ALB の Blue/Green のルールの `ignore_changes: ["action"]`、手順書（Google の `roles/secretmanager.admin`、VM のサインインの注意点、API のパスワードは全クラウド同じ値）。jest 197 件成功 |
 | cdktn の設定 | 3 クラウドとも `dbs`・`containers`・`cicd`・`vms` が有効、`useVpn`・`hostZones` は無効。`apiContainerConfig`: `topology` は dev `independent`（各クラウドが単体）、`azureSecretReady`・`readinessProbe`・`journalPrune.enabled` は `false`。AWS の DB は Aurora（RDS は `build: false`） |
 | クラウド | 2026-10-18 に dev を構築（246 リソース）して一部を検証した後、**ユーザーが destroy する**（§8.5）。次回はもう一度構築から |
 | ローカル | compose の 3 ノードが起動中（プライマリ aws）。検証用イメージ `nicolaka/netshoot:v0.13` が残っている。退避した古い証明書（流出した鍵）が `/tmp/claude-1000/-mnt-dev-data-multicloud-dev-src/8ef6c963-6b3f-4a26-a463-117173986007/scratchpad/old-certs` にある（§8.4） |
@@ -169,7 +169,7 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | # | 作業 | 場所 | 承認・判断 | 関連 |
 |---|---|---|---|---|
-| 1 | **dev 環境を構築**: `cdktn diff` で内容を確認 → `cdktn deploy`。設定は §8.1 のまま（単体構成、VPN・DNS なし）。2026-10-18 に一度構築済み（§8.5）。次回の前に、cdktn の未コミットの変更（ALB の修正を含む）をコミットしておく。Google の cdktn のサービスアカウントには `roles/secretmanager.admin` を付与済み | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
+| 1 | **dev 環境を構築**: `cdktn diff` で内容を確認 → `cdktn deploy`。設定は §8.1 のまま（単体構成、VPN・DNS なし）。2026-10-18 に一度構築済み（§8.5）。ALB の修正は push 済み（`f489037`）。Google の cdktn のサービスアカウントには `roles/secretmanager.admin` を付与済み | cdktn | 課金を伴うインフラ変更の承認 | FEAT-04 §7 |
 | 2 | シークレットの値を入れる（`db-api-password` は 3 クラウドとも同じ値。手順は cdktn の operations.md「Secrets」）。AWS と Google は Cloud Shell からでも入れられる（2026-10-18 に確認）。Azure の Key Vault は VNet からしか接続できないため、Azure の VM（Bastion を有効にして接続）から入れる。その後 `azureSecretReady: true` にして cdktn を deploy | VM・Cloud Shell・cdktn | — | API-08 |
 | 3 | マネージド DB の権限を確認（`CREATE DATABASE`、組み込みロケール `C.UTF-8`、`pg_replication_origin_status`、`pg_terminate_backend`、`subconninfo`） | VM | クラウドの DB への実行の承認 | API-04 |
 | 4 | DB の初回セットアップを、単体のクラウドごとに `NODES=<cloud>` で実行: `database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `switchover.sh <cloud>`（`replication-setup.sh` は単体では何もしない） | VM | クラウドの DB への実行の承認 | API-01、API-18 |
@@ -209,14 +209,13 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 1 回目のエラー | Google: `Permission 'secretmanager.secrets.setIamPolicy' denied`（Cloud Run の実行用のサービスアカウントにシークレットの読み取り権限を付けるところ）。cdktn のサービスアカウントに `roles/secretmanager.admin` が必要だった。ユーザーが付与し、cdktn の getting-started（英・日）の権限の一覧に追記 |
 | 2 回目 | 成功（6 追加、9 変更、1 作り直し）。変更は、ALB のリスナーのルール、Azure の Container Apps・サブネット・DevOps のプール・パイプライン、Google の VM など、deploy のたびに差分が出る設定（クラウド側が補う値と cdktn の設定のずれ）。データへの影響はない。毎回出る差分の整理は未対応 |
 | 入口の応答 | Google（`34.104.187.13`）と Azure（`20.222.21.118`）は仮のイメージが 200。**AWS の ALB は 503** |
-| AWS の 503 の原因（見立て） | ECS の Blue/Green が書き換えた ALB の優先度 1 のルールの転送先を、2 回目の deploy で Terraform が最初のターゲットグループに戻した。**修正（未コミット）**: `constructs/loadbalancer/awsalb.ts` で、このルールに `ignore_changes: ["action"]`。ターゲットグループの状態での確認はできていない（次回の構築で、修正後に deploy を 2 回行っても 503 にならないことを確認する） |
+| AWS の 503 の原因（見立て） | ECS の Blue/Green が書き換えた ALB の優先度 1 のルールの転送先を、2 回目の deploy で Terraform が最初のターゲットグループに戻した。**修正（`f489037`）**: `constructs/loadbalancer/awsalb.ts` で、このルールに `ignore_changes: ["action"]`。ターゲットグループの状態での確認はできていない（次回の構築で、修正後に deploy を 2 回行っても 503 にならないことを確認する） |
 | シークレット | AWS と Google は Cloud Shell から入れた（VM ではサインインの手順でつまずいた: AWS は `--remote` が必要、Google は VM の既定のサービスアカウントのスコープ不足。cdktn の operations.md に注意点を追記）。Azure は Bastion を有効にしてから。destroy でシークレットの値も消えるので、次回の構築後に入れ直す |
-| 手順書の不備（修正済み・未コミット） | cdktn の operations.md「Secrets」が、各 VM で別々のパスワードを作る手順になっていた（API のパスワードは全クラウド同じ値、の決定と不一致）。最初の VM で作り、他の VM には同じ値を入れる手順に修正 |
+| 手順書の不備（修正済み） | cdktn の operations.md「Secrets」が、各 VM で別々のパスワードを作る手順になっていた（API のパスワードは全クラウド同じ値、の決定と不一致）。最初の VM で作り、他の VM には同じ値を入れる手順に修正 |
 | その他 | この環境には AWS・Google・Azure の CLI がない。クラウドの状態の確認は、ユーザーの Cloud Shell や VM で行う |
 
 ### 8.6 ユーザーの回答待ち
 
 | # | 内容 |
 |---|---|
-| 1 | cdktn の未コミットの変更（ALB の修正など）と、このファイルの追記のコミット・push |
-| 2 | 次回の dev の構築の時期（Azure は Bastion を有効にしてシークレットを入れる）。課金を伴う |
+| 1 | 次回の dev の構築の時期（Azure は Bastion を有効にしてシークレットを入れる）。課金を伴う |
