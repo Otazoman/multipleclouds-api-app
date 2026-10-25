@@ -202,11 +202,33 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | # | 作業 | 承認・判断 | 関連 |
 |---|---|---|---|
-| 6 | 変更履歴の削除ジョブが 3 クラウドで実際に動くか（毎日 3 時台。構築したまま翌日まで残す。AWS はリビジョンなしの指定で最新のリビジョンを実行するか）。アラートが実際に鳴るか（わざとエラーを出す） | 課金（一晩） | API-07、API-20 |
+| 6 | 変更履歴の削除ジョブが 3 クラウドで実際に動くか。一晩残さず、段階 3 の deploy の後に手で起動して確認する（下の「削除ジョブの確認の手順」）。成功するとログに `Deleted N journal rows older than 30 days on <primary> (epoch N)`（件数 0 でも成功）。あわせてアラートが鳴るか（わざとエラーを出す。方法は試すときに決める） | 課金（構築の間だけ） | API-07、API-20 |
 | 3 | マネージド DB の権限の残り: `pg_replication_origin_status`（強制切り替え）、`pg_terminate_backend`（ノードの削除）を管理者で使えるか | クラウドの DB への実行 | API-04 |
 | 9 | 運用手順のリハーサル: 計画的な切り替え（`cluster-setup.sh aws --primary google` でも可）、強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時に AWS / Google の VM から切り替える手順 | クラウドの DB への実行 | API-09 |
 | 7 | 往復時間と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` の調整 | — | API-05、API-06 |
 | 8b | 冗長構成: API の複数台、Aurora を 2 台以上、Cloud SQL の HA、Azure の HA。DB のフェイルオーバーの後もレプリケーションが続くか | 課金（冗長構成） | API-22 |
+
+**削除ジョブの確認の手順（§8.2 の 6。一晩残すと約 20 ドルかかるため、手で起動する）**
+
+```bash
+# Google（Cloud Shell）: Cloud Scheduler から今すぐ起動（Scheduler からの起動の権限も確認できる）
+gcloud scheduler jobs run multicloud-google-journal-prune --location=asia-northeast1
+gcloud run jobs executions list --job=multicloud-google-journal-prune --region=asia-northeast1 --limit=1
+gcloud logging read 'resource.type="cloud_run_job" AND textPayload:"journal"' --freshness=15m --limit=5 --format='value(textPayload)'
+
+# Azure: 今すぐ起動して実行の状態（Succeeded）を見る
+az containerapp job start -g rg_multicloud -n multicloud-azure-journal-prune
+az containerapp job execution list -g rg_multicloud -n multicloud-azure-journal-prune --query '[0].{name:name,status:properties.status}' -o table
+
+# AWS（CloudShell）: EventBridge Scheduler には「今すぐ実行」がないので、一時的に 5 分ごとにする
+# （リビジョンなしのタスク定義で最新のリビジョンが動くかの確認。次の cdktn deploy で毎日 3 時に戻る）
+aws scheduler get-schedule --region ap-northeast-1 --name multicloud-aws-journal-prune --output json \
+  | jq '{Name, GroupName, ScheduleExpression: "rate(5 minutes)", ScheduleExpressionTimezone, FlexibleTimeWindow, Target, State}' > /tmp/prune.json
+aws scheduler update-schedule --region ap-northeast-1 --cli-input-json file:///tmp/prune.json
+# 5〜6 分後
+aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/ecs/api-service \
+  --filter-pattern '"journal rows"' --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[].message' --output text
+```
 
 **stg・prod の前に**
 
