@@ -533,12 +533,14 @@ subscriptions. Reset it, then add it as a new node.
   every cloud's secret `db-api-password` ([getting-started.md](getting-started.md)).
   Set the new password in every `NODE_<N>_API_PASSWORD` and run
   `scripts/api-role-setup.sh`; then update `db-api-password` in every
-  cloud's secret store and restart all APIs (a new deployment: the
+  cloud's secret store (`scripts/secrets-set.sh <cloud>` on each cloud) and restart all APIs (a new deployment: the
   platforms read the secret when a container starts). Existing connections
   keep working until then, but new ones fail: do it at a quiet time and
   without delay between the steps.
-- **Replication role:** change `NODE_<N>_REPL_PASSWORD` and run
-  `scripts/replication-setup.sh`. It sets the new password on the role and
+- **Replication role:** every node's `app_repl` has the same password,
+  stored in every cloud's secret `db-repl-password`. Set the new password in
+  every cloud (`scripts/secrets-set.sh <cloud>`) and in every
+  `NODE_<N>_REPL_PASSWORD`, and run `scripts/replication-setup.sh`. It sets the new password on the role and
   updates the connection string of the subscriptions that use it. Between
   the two, the affected subscriptions cannot reconnect; writes may get
   `COMMIT_UNCONFIRMED` if no other node can confirm them meanwhile.
