@@ -8,13 +8,13 @@
 
 | # | 作業 | 場所 | 詳細 |
 | --- | --- | --- | --- |
-| 1 | API のフラグ（`azureSecretReady`、`readinessProbe`、`journalPrune.enabled`）を無効にしてインフラを構築 | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
+| 1 | 構築の段階 1 でインフラを構築（`npm run build-stage` で確認） | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
 | 2 | すべてのクラウドにパスワードを入れる（同じ値）：`scripts/secrets-set.sh <cloud>` | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | 下の 2 章 |
-| 3 | Azure：`azureSecretReady: true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「シークレット」 |
+| 3 | `npm run build-stage -- 2` の後、`cdktn deploy`（Azure の Container App が Key Vault のシークレットを参照する） | インフラのリポジトリ | インフラの operations の「環境を構築する」 |
 | 4 | データベースのセットアップ | クラウド単体：各クラウドの VM。クラスタ：どれか1台の VM（データベースはプライベート） | 下の 2〜3 章 |
 | 5 | API のデプロイ：環境のブランチにマージ。インフラを構築した直後（マージするものがない）は、各クラウドのパイプラインを 1 回実行 | GitHub（プルリクエスト）、または各クラウドのコンソール / CLI。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
 | 6 | 確認 | 自分の端末 | 6 章 |
-| 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 6） |
+| 7 | `npm run build-stage -- 3` の後、`cdktn deploy`（`/readyz` のヘルスチェック、変更履歴の削除ジョブ） | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 8） |
 
 1〜3 がインフラの構築で、4 からがこのリポジトリの作業です。
 `cdktn deploy` は 1・3・7 の 3 回実行します（理由はインフラの operations の「環境を構築する」）。その後のリリースはマージだけです。
@@ -237,13 +237,14 @@ scripts/node-setup.sh aws               # Google・Azure の VM では google / 
 その他の `DB_<NODE>_*` は、省略するとこのクラウドの値と同じになります。異なるノードだけ
 設定してください（例：`DB_<NODE>_SSLMODE`）。
 
-インフラのリポジトリの次の2つの設定は、初回のデプロイの順番に関係します：
+インフラのリポジトリの次の2つの設定は、初回のデプロイの順番に関係します。インフラの構築の段階
+（`npm run build-stage -- <段階>`）で有効になります：
 
-- `azureSecretReady`：Azure の Container App は、参照する Key Vault のシークレットがないと起動できません。
-  `false` でインフラを deploy し、Azure の VM からシークレットを設定してから、`true` で deploy します。
-- `readinessProbe`：仮のイメージは `/` にしか応答しません。API をデプロイした後（手順 5）に `true` にして
-  インフラを deploy すると、ロードバランサーとコンテナ基盤が `/readyz`（マイグレーションを含む readiness）と
-  `/healthz`（liveness）を使います。
+- 段階 2、`azureSecretReady`：Azure の Container App は、参照する Key Vault のシークレットがないと起動できません。
+  段階 1 でインフラを deploy し、Azure の VM からシークレットを設定してから、段階 2 で deploy します。
+- 段階 3、`readinessProbe`（と変更履歴の削除ジョブ）：仮のイメージは `/` にしか応答しません。API をデプロイした後
+  （手順 5）に段階 3 でインフラを deploy すると、ロードバランサーとコンテナ基盤が `/readyz`（マイグレーションを含む
+  readiness）と `/healthz`（liveness）を使います。
 
 ## 5. デプロイ
 
@@ -265,7 +266,8 @@ gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch
 ```
 
 Azure：Azure DevOps でパイプライン `multicloud-api-deploy` を開き、**Run pipeline** でブランチ `dev` を指定します。
-1 つのクラウドのビルドをやり直すとき（失敗したときなど）も同じです。
+1 つのクラウドのビルドをやり直すとき（失敗したときなど）も同じです。結果はメールで届きます（Azure DevOps は
+パイプラインを実行した人に、AWS と Google Cloud はインフラのアラートの通知先 `ALERT_EMAILS` に）。
 
 ## 6. 確認
 
