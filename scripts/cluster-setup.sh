@@ -133,16 +133,19 @@ done
 if [[ -n "$need_store" ]]; then
   echo "== Reading the passwords from the $cloud secret store"
   AWS_REGION="${AWS_REGION:-ap-northeast-1}"
+  # The CLI's error, shown when a password cannot be read
+  CLI_ERRORS="$(mktemp)"
+  trap 'rm -f "$NODES_FILE" "$CLI_ERRORS"' EXIT
   read_secret() {
     case "$cloud" in
       aws)
         aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$1" \
-          --query SecretString --output text 2> /dev/null || true
+          --query SecretString --output text 2>> "$CLI_ERRORS" || true
         ;;
-      google) gcloud secrets versions access latest --secret="$1" 2> /dev/null || true ;;
+      google) gcloud secrets versions access latest --secret="$1" 2>> "$CLI_ERRORS" || true ;;
       azure)
         az keyvault secret show --vault-name "${AZURE_KEY_VAULT:-multicloud-kv-001}" --name "$1" \
-          --query value -o tsv 2> /dev/null || true
+          --query value -o tsv 2>> "$CLI_ERRORS" || true
         ;;
     esac
   }
@@ -161,8 +164,15 @@ if [[ -n "$need_store" ]]; then
       ;;
   esac
   for value in "$api" "$repl"; do
-    if [[ -z "$value" || "$value" == "CHANGE_ME" ]]; then
-      echo "   The passwords could not be read: sign in to the $cloud CLI, and set them on every cloud with scripts/secrets-set.sh" >&2
+    if [[ "$value" == "CHANGE_ME" ]]; then
+      echo "   The passwords still have their dummy value: set them on every cloud with scripts/secrets-set.sh" >&2
+      exit 1
+    fi
+    if [[ -z "$value" ]]; then
+      echo "   The passwords could not be read from the $cloud secret store. The $cloud CLI said:" >&2
+      awk '!seen[$0]++ { print "     " $0 }' "$CLI_ERRORS" >&2
+      echo "   Sign in to the $cloud CLI (e.g. the session expired) or check its access to the secrets;" >&2
+      echo "   set them on every cloud with scripts/secrets-set.sh" >&2
       exit 1
     fi
   done

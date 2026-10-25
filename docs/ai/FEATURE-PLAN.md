@@ -2,7 +2,7 @@
 
 - 作成日: 2026-10-12（最終更新 2026-10-25）
 - 表の見方: 完了したものは ID（または番号）の前に ✅ を付け、内容を取り消し線にしている
-- ステータス（2026-10-25 終了時）: dev で 3 クラウドのクラスタ構成が、haBgp・HTTPS（§8.5.4）と singleTunnel・HTTP（§8.5.5）の両方で動作。DB のセットアップは `cluster-setup.sh` の 1 コマンド、DB 同士はすべてプライベート DNS の名前で接続。構築の段階（`npm run build-stage`）とビルドの結果のメールを実装（未 deploy）。その後ユーザーが destroy。**再開時は §8 から**（§8.2 の 8b 以降）。
+- ステータス（2026-10-25 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり（haBgp・HTTPS、singleTunnel・HTTP）となし（§8.5.6）のすべてで動作。DB のセットアップは `cluster-setup.sh` の 1 コマンド。構築の段階（`npm run build-stage`）、ビルドの結果のメール（3 クラウド）、コンテナへの接続をロードバランサーだけに制限（API-29）も確認済み。**再開時は §8 から**（§8.2 の 8b 以降）。
 - 分担（2026-10-18 に確認）: クラウド間のデータの複製は PostgreSQL の論理レプリケーション（VPN 経由、5432／TLS）。アプリは書き込みをプライマリに集め、他ノードへの到達を待ち、変更履歴・冪等キー・プライマリの切り替えを受け持つ。HTTPS はクライアントからロードバランサーまでで、レプリケーションとは別。クラウドの中の DB の冗長化（フェイルオーバー）は各クラウドの機能で、アプリからは 1 ノードに見える。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
@@ -71,7 +71,7 @@
 | API-26 | P2 | セキュリティ（点検 d）: DB の管理者パスワードが公開のサンプルの値（dev は了承済み）。stg・prod では必ず変える。Terraform の state にも残るので state は作業端末だけに置く | 未着手 |
 | API-27 | P3 | セキュリティ（点検 e）: API から DB への TLS が `require`（暗号化のみで証明書を検証しない）。より厳密には `verify-full` と CA の配布 | 未着手 |
 | API-28 | P3 | セキュリティ（点検 f）: AWS の作業用 VM の SG が 3 クラウドと Cloud SQL の範囲から全ポートを受け付ける。SSH など必要なポートだけに絞る | 未着手 |
-| ✅ ~~API-29~~ | P2 | ~~セキュリティ（点検 1）: コンテナにロードバランサー以外から入れないようにする。AWS の ECS の SG が VPC 全体から 8080・80・443 を受け付けていた、Azure の Container App が VNet と VPN の先から入れた~~ | **完了（2026-10-25、cdktn、未 deploy）**: ECS の SG は ALB の SG からの 8080 だけ（`sourceSecurityGroupNames`）、ECS のタスクの公開 IP をなし（NAT 経由）、Container App の受信を Application Gateway のサブネットだけに（`allowedSourceSubnets`）。Cloud Run はもとからロードバランサーと内部だけ。次の構築で確認 |
+| ✅ ~~API-29~~ | P2 | ~~セキュリティ（点検 1）: コンテナにロードバランサー以外から入れないようにする。AWS の ECS の SG が VPC 全体から 8080・80・443 を受け付けていた、Azure の Container App が VNet と VPN の先から入れた~~ | **完了（2026-10-25、cdktn。プライベート DNS なしの構築で確認）**: ECS の SG は ALB の SG からの 8080 だけ（`sourceSecurityGroupNames`）、ECS のタスクの公開 IP をなし（NAT 経由）、Container App の受信を Application Gateway のサブネットだけに（`allowedSourceSubnets`）。Cloud Run はもとからロードバランサーと内部だけ |
 
 ## 4. スクリプトの実行場所（API-01、API-07）
 
@@ -196,9 +196,9 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 11 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |
 | 12 | P3 の課題（MySQL の構成で PostgreSQL と同じことができるかの検討、変更履歴からの修復、名前付きクエリの検証、`compose.yaml` のコメント） | アプリ | 実施の判断 | API-10〜13 |
 | 13 | フロントエンドからのみアクセスできる仕組み（方式の検討から） | アプリ・cdktn | 設計の承認 | API-23 |
-| 14 | cdktn の改善（任意）: ~~CodeBuild とプールの作成待ち~~ ~~Azure のサブネットの更新中のエラー~~ **対策済み（2026-10-25）**。残り: deploy のたびに出る差分の整理（§8.5）、Google のアラートの部品の型から使えない比較（`COMPARISON_GE` など）を外す。**次の構築で確認**: 構築の段階（`npm run build-stage`）、ビルドの結果のメール（AWS: EventBridge→SNS、Google: Cloud Build のログ一致。Google の `DONE` / `ERROR` の行の判定は実際のログで確認）、Azure のサブネットの順番の修正、`npm run before-destroy` | cdktn | 実施の承認 | — |
+| 14 | cdktn の改善（任意）: ~~CodeBuild とプールの作成待ち~~ ~~Azure のサブネットの更新中のエラー~~ **対策済み（2026-10-25）**。残り: deploy のたびに出る差分の整理（§8.5）、Google のアラートの部品の型から使えない比較（`COMPARISON_GE` など）を外す。**確認済み（2026-10-25）**: 構築の段階、ビルドの結果のメール（AWS・Google とも届いた）、作成待ちの修正（1 回目の deploy がエラーなし）、`npm run before-destroy` | cdktn | 実施の承認 | — |
 | 15 | セキュリティの課題（HTTPS、WAF・レート制限、本番の DB のパスワード、DB の TLS の検証、作業用 VM の SG）。stg・prod の前に | cdktn・アプリ | 実施の承認 | API-24〜28 |
-| 16 | プライベート DNS なしのクラスタの確認（`hostZones: false`、`npm run build-stage -- 2 --azure-db-ip`、`cluster-setup-hosts`）と、コンテナへの接続の制限（API-29）の確認 | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19、API-29 |
+| ✅ 16 | プライベート DNS なしのクラスタの確認（`hostZones: false`、`npm run build-stage -- 2 --azure-db-ip`、`cluster-setup-hosts`）と、コンテナへの接続の制限（API-29）の確認。**完了（2026-10-25、§8.5.6）** | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19、API-29 |
 
 ### 8.3 deploy のときに確認すること（未検証の前提）
 
@@ -291,6 +291,16 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 動作確認 | 3 クラウドで `/healthz`（同じ版 `79a1f9a`）と `/readyz`（200）。Azure の API で書き込み、Google・AWS・Azure の API から読めた |
 | 改善 | 手で書き換えていた 3 つのフラグを構築の段階に（`npm run build-stage -- <1・2・3>`、`state/<env>/build-stage.json`、`before-destroy` が 1 に戻す。テストは段階 1 に固定）。AWS と Google のビルドの結果のメール（成功・失敗）。手順書の「環境を構築する」を手順 1〜8 の 1 つの表に |
 | 設定 | 3 つのフラグは構築の段階で決まるので、設定ファイルの書き換えは不要に。dev の `topology` は `cluster`、`dns` は `false` のまま（ユーザーの設定） |
+
+### 8.5.6 2026-10-25 のプライベート DNS なしのクラスタの確認
+
+| 項目 | 内容 |
+|---|---|
+| 構成 | dev、`topology: cluster`、`hostZones: false`、VPN `singleTunnel`、HTTP のロードバランサー、Azure の Bastion なし（Azure の VM には AWS の VM から VPN 経由で SSH） |
+| cdktn の変更（この構築の前） | プライベート DNS なしでもクラスタを作れるように（AWS は Aurora のエンドポイント、Google は Cloud SQL の IP、Azure は `npm run build-stage -- 2 --azure-db-ip` で記録した IP。`.env` はコンテナの起動時にしか読まれないため、段階のファイルに記録）。deploy の最後に `cluster-setup-hosts` と `api-health-urls` を表示。コンテナへの接続をロードバランサーだけに（API-29）。`build-stage` で Azure の IP の付け忘れを注意 |
+| つまずき | (1) 段階 2 を `--azure-db-ip` なしで設定し、合成が止まった（想定どおりの停止。注意の表示を追加）。(2) `cluster-setup.sh` が AWS のシークレットを読めなかった（CLI のサインイン切れ。CLI のエラーを表示するよう修正）。(3) Azure の DB への管理者のログインが 1 回失敗（パスワードを明示的に入力して再実行で成功、原因は不明） |
+| DB のセットアップ | `NODE_AWS_HOST=<Aurora のエンドポイント> NODE_GOOGLE_HOST=<Cloud SQL の IP> NODE_AZURE_HOST=<Azure の IP> scripts/cluster-setup.sh aws` で成功 |
+| 動作確認 | 3 クラウドで `/healthz`（同じ版 `8313c5f`）と `/readyz`（200）。各クラウドで書き込み、3 クラウドから読む総当たりの 9 通りすべて成功。ビルドの結果のメールが AWS・Google・Azure とも届いた |
 
 ### 8.6 ユーザーの回答待ち
 
