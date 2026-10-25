@@ -123,6 +123,8 @@ SQL
     conninfo+=" user=$(conninfo_quote "$(require_node_var "$publisher" REPL_USER)")"
     conninfo+=" password=$(conninfo_quote "$(require_node_var "$publisher" REPL_PASSWORD)")"
     conninfo+=" sslmode=$(conninfo_quote "${sslmode:-require}")"
+    # Fail fast when the publisher is unreachable (no limit otherwise)
+    conninfo+=" connect_timeout=10"
     # "", "t" (enabled) or "f" (disabled by scripts/switchover.sh --force)
     enabled="$(psql_admin "$subscriber" -At -v sub="$sub" <<'SQL'
 SELECT subenabled FROM pg_subscription
