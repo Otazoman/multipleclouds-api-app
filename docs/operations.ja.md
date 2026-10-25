@@ -466,11 +466,12 @@ DAYS=30 scripts/journal-prune.sh
 - **API ロール：** 全ノードの `app_api` は同じパスワードで、すべてのクラウドのシークレット `db-api-password` に
   あります（[getting-started.ja.md](getting-started.ja.md)）。新しいパスワードをすべての `NODE_<N>_API_PASSWORD` に
   設定して `scripts/api-role-setup.sh` を実行し、すべてのクラウドのシークレットストアの `db-api-password` を
-  更新してから、すべての API を再起動します（新しいデプロイ。コンテナ基盤はコンテナの起動時にシークレットを
+  更新してから（各クラウドで `scripts/secrets-set.sh <cloud>`）、すべての API を再起動します（新しいデプロイ。コンテナ基盤はコンテナの起動時にシークレットを
   読みます）。再起動までは既存の接続は使えますが、新しい接続は失敗します。利用の少ない時間に、手順の間を
   空けずに行ってください。
-- **レプリケーションロール：** `NODE_<N>_REPL_PASSWORD` を変更して `scripts/replication-setup.sh` を
-  実行します。ロールのパスワードを更新し、それを使うサブスクリプションの接続文字列も更新します。
+- **レプリケーションロール：** 全ノードの `app_repl` は同じパスワードで、すべてのクラウドのシークレット
+  `db-repl-password` にあります。新しいパスワードをすべてのクラウド（`scripts/secrets-set.sh <cloud>`）と
+  すべての `NODE_<N>_REPL_PASSWORD` に設定して、`scripts/replication-setup.sh` を実行します。ロールのパスワードを更新し、それを使うサブスクリプションの接続文字列も更新します。
   この2つの間は該当するサブスクリプションが再接続できないため、他に確認できるノードがなければ
   書き込みが `COMMIT_UNCONFIRMED` になることがあります。
 

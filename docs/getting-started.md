@@ -10,9 +10,9 @@ environment and local testing, see the [README](../README.md).
 | # | Step | Where | Details |
 | --- | --- | --- | --- |
 | 1 | Build the infrastructure with the API flags off (`azureSecretReady`, `readinessProbe`, `journalPrune.enabled`) | Infrastructure repository: `cdktn diff`, `cdktn deploy` | Infrastructure getting-started and operations ("Deploy", "Deploy again after a destroy") |
-| 2 | Set the API password secret on every cloud (the same value) | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Infrastructure operations, "Secrets" |
+| 2 | Set the passwords on every cloud (the same values): `scripts/secrets-set.sh <cloud>` | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Section 2 below |
 | 3 | Azure: `azureSecretReady: true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Secrets" |
-| 4 | Set up the databases | Each cloud's VM (the databases are private) | Sections 2–3 below |
+| 4 | Set up the databases | Clouds alone: each cloud's VM. A cluster: one VM of any cloud (the databases are private) | Sections 2–3 below |
 | 5 | Deploy the API: merge into the environment's branch; right after the infrastructure is built (nothing new to merge), run each cloud's pipeline once | GitHub (pull request) or each cloud's console / CLI; each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
 | 6 | Verify | Your machine | Section 6 |
 | 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Build an environment" (step 6) |
@@ -60,18 +60,82 @@ You also need a host to run the database scripts:
 - bash and `psql` 15 or later
 - a clone of this repository
 
-## 2. Node settings
+## 2. Passwords and node settings
 
-**Clouds alone** (each cloud on its own database): skip this section and
-run `scripts/node-setup.sh <cloud>` on each cloud's VM (section 3).
+### Passwords
 
-For a cluster, create the node settings for the scripts on the host:
+Choose two passwords once and keep them (e.g. in a password manager):
+
+- **API (`app_api`): one password for every node.** Every API connects to
+  every node (writes go to the primary, which can be any of them), so each
+  cloud's containers hold every node's password anyway; one value keeps the
+  secret stores simple. The containers read `DB_PASSWORD` and every
+  `DB_<NODE>_PASSWORD` from their own cloud's secret `db-api-password`.
+- **Replication (`app_repl`): one password for every node too** (a cluster
+  only). Only the scripts use it; with one value, the scripts can run on any
+  one VM and read every password from that cloud's own secret store.
 
 ```bash
-cp replication/nodes.env.sample replication/nodes.env
+openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32; echo   # run twice: API, replication
 ```
 
-Fill in, for each node (`aws`, `google`, `azure`):
+Set them in **every** cloud's secret store, one command per cloud, signed in
+to that cloud's CLI (infrastructure operations, "Secrets"): AWS and Google
+Cloud from Cloud Shell or their VM, Azure from its VM (the Key Vault is
+reachable only from the Azure VNet):
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # or git pull
+cd multipleclouds-api-app
+scripts/secrets-set.sh aws        # google / azure on the other clouds
+```
+
+| Prompt | Answer |
+| --- | --- |
+| `API password` | The API password (pasted, not echoed) |
+| `Replication password` | The replication password; Enter leaves it unchanged (clouds alone do not use it) |
+
+It checks the sign-in, sets `db-api-password` and `db-repl-password` of that
+cloud, reads them back to check them and ends with `Done`. The values do not
+appear on the screen, in the shell history or in the process list. Safe to
+run again (e.g. to change a password; then also run the role setup again,
+[operations.md](operations.md#passwords)). The secret names default to the
+infrastructure's dev environment; override them in the environment
+(`AWS_API_SECRET`, `AWS_REPL_SECRET`, `GOOGLE_API_SECRET`,
+`GOOGLE_REPL_SECRET`, `AZURE_KEY_VAULT`, `AZURE_API_SECRET`,
+`AZURE_REPL_SECRET`, `AWS_REGION`).
+
+### Node settings (a cluster)
+
+**Clouds alone** (each cloud on its own database): skip this and run
+`scripts/node-setup.sh <cloud>` on each cloud's VM (section 3).
+
+For a cluster, run the scripts on **one** VM of any cloud: through the VPN
+and the private DNS it reaches every database. Sign in to that cloud's CLI
+only. Create the node settings (the private DNS names of the
+infrastructure's dev environment; the admin users from its `.env.<env>`):
+
+```bash
+cat > replication/nodes.env <<'EOF'
+NODES="${NODES:-aws google azure}"
+DB_NAME=appdb
+NODE_AWS_HOST=aurora-postgres.aws.inner
+NODE_AWS_ADMIN_USER=root
+NODE_AWS_REPL_USER=app_repl
+NODE_AWS_API_USER=app_api
+NODE_GOOGLE_HOST=cloudsql-postgres.google.inner
+NODE_GOOGLE_ADMIN_USER=root
+NODE_GOOGLE_REPL_USER=app_repl
+NODE_GOOGLE_API_USER=app_api
+NODE_AZURE_HOST=postgres-prod.azure.inner
+NODE_AZURE_ADMIN_USER=root
+NODE_AZURE_REPL_USER=app_repl
+NODE_AZURE_API_USER=app_api
+EOF
+for h in aurora-postgres.aws.inner cloudsql-postgres.google.inner postgres-prod.azure.inner; do
+  pg_isready -h "$h" -p 5432    # every database: "accepting connections"
+done
+```
 
 | Setting | Value |
 | --- | --- |
@@ -80,56 +144,26 @@ Fill in, for each node (`aws`, `google`, `azure`):
 | `NODE_<N>_ADMIN_USER` | Database admin user created by the infrastructure |
 | `NODE_<N>_REPL_USER`, `NODE_<N>_API_USER` | Keep `app_repl` / `app_api` unless you have a reason to change them |
 
-`replication/nodes.env` is ignored by git. Do not write passwords in it on a
-shared machine; export them in the shell instead, reading them from the
-secret store just before running the scripts:
+`replication/nodes.env` is ignored by git. Do not write passwords in it;
+export them in the shell just before running the scripts. On the AWS VM
+(on a Google Cloud VM, read them with `gcloud secrets versions access latest
+--secret=multicloud-google-secret-db-api-password` and `...-db-repl-password`):
 
 ```bash
-export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...
-export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=...
-export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
-# One API password for every node
-export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
-```
-
-For a cluster, run the scripts on the Azure VM (the only place that can
-read the Key Vault), signed in to every cloud's CLI (infrastructure
-operations, "Secrets"), and read the values from the secret stores:
-
-```bash
-export NODE_AWS_API_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+api="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
   --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
-export NODE_GOOGLE_API_PASSWORD="$NODE_AWS_API_PASSWORD" NODE_AZURE_API_PASSWORD="$NODE_AWS_API_PASSWORD"
-export NODE_AWS_REPL_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+repl="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
   --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
-export NODE_GOOGLE_REPL_PASSWORD="$(gcloud secrets versions access latest \
-  --secret=multicloud-google-secret-db-repl-password)"
-export NODE_AZURE_REPL_PASSWORD="$(az keyvault secret show --vault-name multicloud-kv-001 \
-  --name db-repl-password --query value --output tsv)"
-# Database admin passwords (.env.<env> of the infrastructure): typed, not echoed
 for n in AWS GOOGLE AZURE; do
-  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo && export "NODE_${n}_ADMIN_PASSWORD=$v"
+  # Database admin password (.env.<env> of the infrastructure): typed, not echoed
+  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo
+  export "NODE_${n}_ADMIN_PASSWORD=$v" "NODE_${n}_API_PASSWORD=$api" "NODE_${n}_REPL_PASSWORD=$repl"
 done
+unset api repl v
 ```
 
-Leave out the clouds that are not in the cluster, and sign out of the
-clouds when done.
-
-The API and replication passwords are chosen by you:
-
-- **API (`app_api`): one password for every node.** Every API connects to
-  every node (writes go to the primary, which can be any of them), so each
-  cloud's containers hold every node's password anyway; one value keeps the
-  secret stores simple. Store it in **every** cloud's secret
-  `db-api-password`: the containers read `DB_PASSWORD` and every
-  `DB_<NODE>_PASSWORD` from their own cloud's copy.
-- **Replication (`app_repl`): one per node**, in that cloud's secret
-  `db-repl-password`. Only the scripts use them.
-
-The secrets are created empty (dummy value) by the infrastructure
-repository; set their values from the VMs with each cloud's CLI as its
-documentation describes (Azure Key Vault is reachable only from the Azure
-VNet).
+Leave out the clouds that are not in the cluster, and sign out of the cloud
+when done.
 
 ## 3. Set up the databases
 

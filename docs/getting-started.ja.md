@@ -9,9 +9,9 @@
 | # | 作業 | 場所 | 詳細 |
 | --- | --- | --- | --- |
 | 1 | API のフラグ（`azureSecretReady`、`readinessProbe`、`journalPrune.enabled`）を無効にしてインフラを構築 | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
-| 2 | すべてのクラウドに API のパスワードのシークレットを入れる（同じ値） | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | インフラの operations の「シークレット」 |
+| 2 | すべてのクラウドにパスワードを入れる（同じ値）：`scripts/secrets-set.sh <cloud>` | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | 下の 2 章 |
 | 3 | Azure：`azureSecretReady: true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「シークレット」 |
-| 4 | データベースのセットアップ | 各クラウドの VM（データベースはプライベート） | 下の 2〜3 章 |
+| 4 | データベースのセットアップ | クラウド単体：各クラウドの VM。クラスタ：どれか1台の VM（データベースはプライベート） | 下の 2〜3 章 |
 | 5 | API のデプロイ：環境のブランチにマージ。インフラを構築した直後（マージするものがない）は、各クラウドのパイプラインを 1 回実行 | GitHub（プルリクエスト）、または各クラウドのコンソール / CLI。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
 | 6 | 確認 | 自分の端末 | 6 章 |
 | 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 6） |
@@ -50,18 +50,76 @@ DB スクリプトを実行するホストも必要です：
 - bash と `psql` 15 以上
 - このリポジトリの clone
 
-## 2. ノード設定
+## 2. パスワードとノード設定
 
-**クラウド単体**（各クラウドが自分のデータベースだけで動く）の場合は、この章は不要です。各クラウドの VM で
-`scripts/node-setup.sh <cloud>` を実行します（3 章）。
+### パスワード
 
-クラスタの場合は、ホストでスクリプト用のノード設定を作ります：
+パスワードを 2 つ決めて控えます（パスワードマネージャーなど）：
+
+- **API（`app_api`）：全ノードで1つのパスワード。** すべての API がすべてのノードに接続する（書き込みは
+  どのノードにもなり得るプライマリへ送る）ため、各クラウドのコンテナはいずれにしても全ノードのパスワードを
+  持ちます。1つの値にするとシークレットストアの管理が簡単になります。コンテナは、自クラウドのシークレット
+  `db-api-password` から `DB_PASSWORD` とすべての `DB_<NODE>_PASSWORD` を読みます。
+- **レプリケーション（`app_repl`）：これも全ノードで1つのパスワード**（クラスタのときだけ）。使うのは
+  スクリプトだけです。1つの値にすると、どれか1台の VM で、そのクラウドのシークレットストアだけから
+  すべてのパスワードを読んでスクリプトを実行できます。
 
 ```bash
-cp replication/nodes.env.sample replication/nodes.env
+openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32; echo   # 2 回実行：API 用、レプリケーション用
 ```
 
-ノード（`aws`、`google`、`azure`）ごとに設定します：
+**すべての**クラウドのシークレットストアに、クラウドごとに1つのコマンドで入れます。そのクラウドの CLI に
+サインインしておきます（インフラの operations の「シークレット」）。AWS と Google Cloud は Cloud Shell か VM、
+Azure は VM から（Key Vault には Azure の VNet からしか接続できません）：
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # clone 済みなら git pull
+cd multipleclouds-api-app
+scripts/secrets-set.sh aws        # 他のクラウドでは google / azure
+```
+
+| 質問 | 答え方 |
+| --- | --- |
+| `API password` | API のパスワード（貼り付け。表示されない） |
+| `Replication password` | レプリケーションのパスワード。Enter で変更しない（クラウド単体では使わない） |
+
+サインインを確認し、そのクラウドの `db-api-password` と `db-repl-password` を設定し、読み戻して確認して、
+最後に `Done` と表示します。値は画面にも、シェルの履歴にも、プロセスの一覧にも出ません。再実行して問題ありません
+（パスワードを変えるときなど。そのときはロールの設定も再実行します：[operations.ja.md](operations.ja.md#パスワード)）。
+シークレットの名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`AWS_API_SECRET`、
+`AWS_REPL_SECRET`、`GOOGLE_API_SECRET`、`GOOGLE_REPL_SECRET`、`AZURE_KEY_VAULT`、`AZURE_API_SECRET`、
+`AZURE_REPL_SECRET`、`AWS_REGION`）。
+
+### ノード設定（クラスタ）
+
+**クラウド単体**（各クラウドが自分のデータベースだけで動く）の場合は不要です。各クラウドの VM で
+`scripts/node-setup.sh <cloud>` を実行します（3 章）。
+
+クラスタでは、どれか**1台**の VM（どのクラウドでもよい）でスクリプトを実行します。VPN とプライベート DNS を
+通して、すべてのデータベースに接続できます。サインインするのは、そのクラウドの CLI だけです。ノード設定を作ります
+（接続先はインフラの dev 環境のプライベート DNS の名前、管理者ユーザーはインフラの `.env.<環境名>` の値）：
+
+```bash
+cat > replication/nodes.env <<'EOF'
+NODES="${NODES:-aws google azure}"
+DB_NAME=appdb
+NODE_AWS_HOST=aurora-postgres.aws.inner
+NODE_AWS_ADMIN_USER=root
+NODE_AWS_REPL_USER=app_repl
+NODE_AWS_API_USER=app_api
+NODE_GOOGLE_HOST=cloudsql-postgres.google.inner
+NODE_GOOGLE_ADMIN_USER=root
+NODE_GOOGLE_REPL_USER=app_repl
+NODE_GOOGLE_API_USER=app_api
+NODE_AZURE_HOST=postgres-prod.azure.inner
+NODE_AZURE_ADMIN_USER=root
+NODE_AZURE_REPL_USER=app_repl
+NODE_AZURE_API_USER=app_api
+EOF
+for h in aurora-postgres.aws.inner cloudsql-postgres.google.inner postgres-prod.azure.inner; do
+  pg_isready -h "$h" -p 5432    # すべて "accepting connections" になること
+done
+```
 
 | 設定 | 値 |
 | --- | --- |
@@ -70,50 +128,24 @@ cp replication/nodes.env.sample replication/nodes.env
 | `NODE_<N>_ADMIN_USER` | インフラで作成したデータベースの管理者ユーザー |
 | `NODE_<N>_REPL_USER`, `NODE_<N>_API_USER` | 特に理由がなければ `app_repl` / `app_api` のまま |
 
-`replication/nodes.env` は git の管理対象外です。共有のマシンではパスワードをファイルに書かず、
-スクリプトを実行する直前にシークレットストアから読み出してシェルで export します：
+`replication/nodes.env` は git の管理対象外です。パスワードはファイルに書かず、スクリプトを実行する直前に
+シェルで export します。AWS の VM の場合（Google Cloud の VM では `gcloud secrets versions access latest
+--secret=multicloud-google-secret-db-api-password` と `...-db-repl-password` で読みます）：
 
 ```bash
-export NODE_AWS_ADMIN_PASSWORD=...   NODE_AWS_REPL_PASSWORD=...
-export NODE_GOOGLE_ADMIN_PASSWORD=... NODE_GOOGLE_REPL_PASSWORD=...
-export NODE_AZURE_ADMIN_PASSWORD=...  NODE_AZURE_REPL_PASSWORD=...
-# API のパスワードは全ノード共通
-export NODE_AWS_API_PASSWORD=... NODE_GOOGLE_API_PASSWORD=$NODE_AWS_API_PASSWORD NODE_AZURE_API_PASSWORD=$NODE_AWS_API_PASSWORD
-```
-
-クラスタでは、Azure の VM（Key Vault を読める唯一の場所）で、すべてのクラウドの CLI にサインインして
-（インフラの operations の「シークレット」）、値をシークレットストアから読み出してスクリプトを実行します：
-
-```bash
-export NODE_AWS_API_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+api="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
   --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
-export NODE_GOOGLE_API_PASSWORD="$NODE_AWS_API_PASSWORD" NODE_AZURE_API_PASSWORD="$NODE_AWS_API_PASSWORD"
-export NODE_AWS_REPL_PASSWORD="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
+repl="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
   --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
-export NODE_GOOGLE_REPL_PASSWORD="$(gcloud secrets versions access latest \
-  --secret=multicloud-google-secret-db-repl-password)"
-export NODE_AZURE_REPL_PASSWORD="$(az keyvault secret show --vault-name multicloud-kv-001 \
-  --name db-repl-password --query value --output tsv)"
-# DB の管理者パスワード（インフラの .env.<環境名>）：入力する（表示されない）
 for n in AWS GOOGLE AZURE; do
-  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo && export "NODE_${n}_ADMIN_PASSWORD=$v"
+  # DB の管理者パスワード（インフラの .env.<環境名>）：入力する（表示されない）
+  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo
+  export "NODE_${n}_ADMIN_PASSWORD=$v" "NODE_${n}_API_PASSWORD=$api" "NODE_${n}_REPL_PASSWORD=$repl"
 done
+unset api repl v
 ```
 
-クラスタに入らないクラウドの行は除き、終わったらクラウドからサインアウトします。
-
-API 用とレプリケーション用のパスワードは自分で決めます：
-
-- **API（`app_api`）：全ノードで1つのパスワード。** すべての API がすべてのノードに接続する（書き込みは
-  どのノードにもなり得るプライマリへ送る）ため、各クラウドのコンテナはいずれにしても全ノードのパスワードを
-  持ちます。1つの値にするとシークレットストアの管理が簡単になります。**すべての**クラウドのシークレット
-  `db-api-password` に登録します。コンテナは、自クラウドのものから `DB_PASSWORD` とすべての
-  `DB_<NODE>_PASSWORD` を読みます。
-- **レプリケーション（`app_repl`）：ノードごと**に、そのクラウドのシークレット `db-repl-password` に
-  登録します。使うのはスクリプトだけです。
-
-シークレットはインフラのリポジトリが空（ダミーの値）で作ります。値は、そのドキュメントのとおり各クラウドの
-VM から CLI で設定します（Azure Key Vault には Azure の VNet からしか接続できません）。
+クラスタに入らないクラウドは除き、終わったらクラウドからサインアウトします。
 
 ## 3. データベースのセットアップ
 
