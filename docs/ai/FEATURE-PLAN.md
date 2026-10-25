@@ -1,7 +1,7 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
-- 作成日: 2026-10-12（最終更新 2026-10-18）
-- ステータス（2026-10-18 終了時）: dev で単体構成（`independent`）のリリースまで成功し、監視と削除ジョブも作成できた（§8.5〜8.5.3）。その後 destroy 済み。両リポジトリに未コミットの変更あり（§8.1）。**再開時は §8 から**（次の作業は §8.2: 削除ジョブと監視の動作確認、クラスタ構成のテスト）。
+- 作成日: 2026-10-12（最終更新 2026-10-25）
+- ステータス（2026-10-25 終了時）: dev で**3 クラウドのクラスタ構成（VPN haBgp、プライベート DNS、HTTPS、論理レプリケーション）が動作**（§8.5.4）。Google の API から AWS の DB（プライマリ）へ書き込み、Azure と AWS の API から読めた。その後ユーザーが destroy。次は HTTP・singleTunnel での再確認（§8.2 の 8c）。両リポジトリに未コミットの変更あり（§8.1）。**再開時は §8 から**。
 - 分担（2026-10-18 に確認）: クラウド間のデータの複製は PostgreSQL の論理レプリケーション（VPN 経由、5432／TLS）。アプリは書き込みをプライマリに集め、他ノードへの到達を待ち、変更履歴・冪等キー・プライマリの切り替えを受け持つ。HTTPS はクライアントからロードバランサーまでで、レプリケーションとは別。クラウドの中の DB の冗長化（フェイルオーバー）は各クラウドの機能で、アプリからは 1 ノードに見える。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
@@ -44,8 +44,8 @@
 |---|---|---|---|
 | API-01 | P1 | クラウドでの初回 DB セットアップ（`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`）。実行場所は §4 | 未着手（dev 環境の構築待ち） |
 | API-02 | P1 | cdktn: 各 API コンテナの環境変数とシークレット参照（§5.2） | **実装済み（2026-10-17、未 deploy）**: cdktn の `config/apicontainer.ts` ほか（FEAT-01 §9 #5）。アプリの `buildspec.yml` は `TASK_FAMILY` の最新リビジョンを元にする。deploy 時に確認すること: Container Apps がプライベートエンドポイントだけの Key Vault のシークレットを読めるか、Cloud Run の startup probe の時間 |
-| API-03 | P1 | クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認 | 未着手 |
-| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `CREATE DATABASE` と組み込みロケール（`LOCALE_PROVIDER builtin`）を使えるか（Aurora・Cloud SQL・Azure。使えなければ `DB_CREATE_OPTIONS` で3クラウド共通の照合順序を指定）、管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手 |
+| API-03 | P1 | クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認 | 未着手。**2026-10-25 に確認済み**: Google の API（Cloud Run）から VPN 経由で AWS の DB に書き込めた。DB 同士の 6 方向の接続も確認（AWS の DB の SG の送信が 80/443 だけだったのを修正） |
+| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `CREATE DATABASE` と組み込みロケール（`LOCALE_PROVIDER builtin`）を使えるか（Aurora・Cloud SQL・Azure。使えなければ `DB_CREATE_OPTIONS` で3クラウド共通の照合順序を指定）、管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手。**2026-10-25 の分かったこと**: 3 クラウドとも `CREATE DATABASE`（組み込みロケール）と `replication-setup.sh` は管理者で実行できた（Aurora は `rds_replication` の付与も可）。Cloud SQL では管理者がサブスクリプションの接続文字列を読めないため、`replication-setup.sh` は毎回 `update connection` になる（サブスクリプションが一瞬再接続するだけで問題なし）。`pg_replication_origin_status`・`pg_terminate_backend` は未確認（切り替えのリハーサルで確認） |
 | API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整。API-06 の想定（書き込み毎秒 700〜800 件が上限の目安）の確認 | 未着手 |
 | API-06 | P2 | DB の接続数（最大約 220 で `max_connections = 100` を超え得た） | **完了**（§6） |
 | API-07 | P2 | 変更履歴の削除の定期実行（§4.3） | **実装済み（2026-10-17、未 deploy）: C. マネージドのジョブ**。アプリ: `src/prune.ts`（`node dist/prune.js`、`JOURNAL_RETENTION_DAYS`）、`cloudbuild.yaml`・`azure-pipelines.yml` でジョブのイメージを更新。cdktn: `apiContainerConfig.journalPrune`（既定 `false`。API のデプロイ後に `true`）で EventBridge Scheduler＋ECS、Cloud Scheduler＋Cloud Run ジョブ、Container Apps ジョブ。ローカルで別ノードから実行し、プライマリで削除され全ノードに反映されることを確認 |
@@ -166,7 +166,7 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | cdktn のリポジトリ | **公開**。`main` の `f489037` まで push 済み（MIT ライセンスと、2026-10-18 の次の変更を含む）: サンプル 2 つ（ECS `worker-service`、Cloud Run `web-service-standalone`）を `build: false`、それに合わせたテストの修正、ALB の Blue/Green のルールの `ignore_changes: ["action"]`、手順書（Google の `roles/secretmanager.admin`、VM のサインインの注意点、API のパスワードは全クラウド同じ値）。jest 197 件成功 |
 | cdktn の設定 | 3 クラウドとも `dbs`・`containers`・`cicd`・`vms` が有効、`useVpn`・`hostZones` は無効。`apiContainerConfig`: `topology` は dev `independent`（各クラウドが単体）、`azureSecretReady`・`readinessProbe`・`journalPrune.enabled` は `false`。AWS の DB は Aurora（RDS は `build: false`） |
 | クラウド | 2026-10-18 に dev を再構築し、**単体構成での最初のリリースに成功**（§8.5）。同日さらに再構築して手順 6（`readinessProbe`・`journalPrune.enabled`）まで deploy（§8.5.3）。その後ユーザーが destroy。次回は構築からやり直す |
-| 未コミットの変更（2026-10-18 終了時） | cdktn: 設定ファイルの整理、監視（API-20）、`config/notifications.ts`、Cloud SQL のユーザーの `deletion_policy = "ABANDON"`、Azure と Google のアラートの比較の修正、テスト、ドキュメント（アラート、deploy が 3 回であることと理由、削除ジョブの事前準備: AWS の `AmazonEventBridgeSchedulerFullAccess`・Google の Cloud Scheduler API、`ALERT_EMAILS`）、ユーザーの設定変更（`commonsettings.ts`、Cloud SQL の名前）。アプリ: operations の「ログとアラート」、getting-started の「全体の流れ」と 5 章（構築直後はパイプラインを手で実行）、本ファイル。コミット・push はユーザーの承認待ち |
+| 未コミットの変更（2026-10-25 終了時） | cdktn: AWS の DB の SG に 5432 の送信、CodeBuild と Azure DevOps のプールの作成待ち（null_resource の sleep。依存関係の抜けも修正）、Google のピアリングされた DNS ドメイン（`peeredDnsDomainNames`）とテスト、`synth-matrix` のテストで topology を固定、operations と configuration/google、`npm run before-destroy`（`scripts/before-destroy.sh`）と operations の destroy の手順、ユーザーの設定（dev の `topology` を `cluster`。LB は HTTP、`vpnMode` は singleTunnel、3 つのフラグは `false` に戻し済み。`dns` を `false`）。アプリ: `scripts/cluster-setup.sh`（新規）、`lib.sh` と `replication-setup.sh` の接続のタイムアウト、getting-started（クラスタの手順、Azure の管理者ユーザー `azuredbadmin`）、本ファイル。コミット・push はユーザーの承認待ち |
 | ローカル | compose の 3 ノードが起動中（プライマリ aws）。検証用イメージ `nicolaka/netshoot:v0.13` が残っている。退避した古い証明書（流出した鍵）が `/tmp/claude-1000/-mnt-dev-data-multicloud-dev-src/8ef6c963-6b3f-4a26-a463-117173986007/scratchpad/old-certs` にある（§8.4） |
 
 ### 8.2 残作業（順番）
@@ -180,15 +180,16 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 5 | **最初のリリース**: feature ブランチを PR で `dev` にマージ（`docs/operations.md` のリリース手順の初回）。3 クラウドで `/healthz`（同じ版）・`/readyz`・ログ（`Primary: <cloud> (epoch 1)`）・読み書きを確認 | GitHub・クラウド | マージの承認 | §2 |
 | 6 | ~~`readinessProbe: true` と `journalPrune.enabled: true` にして cdktn を deploy~~ **deploy は成功（2026-10-18、§8.5.3）**。**残り**: 3 クラウドで削除ジョブが実際に動くか（AWS はリビジョンなしの指定で最新のリビジョンを実行するか）、監視の動作（AWS の SNS の購読承認、Azure のジョブのログが `ContainerAppConsoleLogs` に入るか、わざとエラーを出してアラートが鳴るか） | cdktn・クラウド | deploy の承認 | API-16、API-07、API-20 |
 | 7 | 書き込み時間・同時書き込みの実測（単体構成で可能な範囲） | dev | — | API-05、API-06 |
-| 8 | **VPN でつないでクラスタ構成（論理レプリケーション）をテスト**: `useVpn`・`hostZones` は有効にしてある。事前に DB の権限を確認（3、API-04）。他クラウドの DB への接続を確認（API-03）、`topology` を `cluster` にして deploy。データを残すクラウドを1つ決め、他のノードはリセットしてから `replication-setup.sh`。往復時間と書き込み時間を実測（API-05） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-19、API-03、API-04、API-05 |
-| 8a | HTTPS のロードバランサーに切り替えて確認（Google と Azure の新しい証明書が受け付けられるか。§8.3） | cdktn | deploy の承認 | — |
+| 8 | ~~VPN でつないでクラスタ構成（論理レプリケーション）をテスト~~ **完了（2026-10-25、haBgp・HTTPS、§8.5.4）** | cdktn・VM | — | API-19、API-03、API-04、API-05 |
+| 8a | ~~HTTPS のロードバランサーに切り替えて確認~~ **完了（2026-10-25）**: 3 クラウドとも `https://api.<ドメイン>` で応答（Google と Azure は自己署名の証明書） | cdktn | — | — |
+| 8c | HTTP のロードバランサーと singleTunnel でクラスタを再確認。新しい `cluster-setup.sh`、ピアリングされた DNS ドメイン（cdktn）、作成待ちの対策の確認を兼ねる。往復時間と書き込み時間の実測（API-05） | cdktn・VM | 課金を伴うインフラ変更の承認 | API-05 |
 | 8b | 冗長構成の確認（API と DB の複数台。クラスタ構成ではフェイルオーバー後もレプリケーションが続くか） | cdktn・クラウド | 課金を伴うインフラ変更の承認 | API-22 |
 | 9 | 運用手順のリハーサル（計画的な切り替え、強制切り替え、旧プライマリの復帰、パスワード変更、Azure 障害時に AWS / Google の VM から切り替える手順） | dev | クラウドの DB への実行の承認 | API-09 |
 | 10 | 監視と通知（削除ジョブの失敗、レプリケーションの遅延・停止、スロットの WAL 蓄積）。cdktn の FEAT-03 と合わせて設計 | cdktn・アプリ | 設計の承認 | API-20 |
 | 11 | stg・prod の環境を用意（FEAT-04 §6 #5 の値、各アカウントの CI/CD の接続）し、リリース手順で昇格（`dev` → `staging` → `prod` → `main`） | cdktn・GitHub | 環境ごとの承認 | FEAT-04 |
 | 12 | P3 の課題（MySQL 対応、変更履歴からの修復、名前付きクエリの検証、`compose.yaml` のコメント） | アプリ | 実施の判断 | API-10〜13 |
 | 13 | フロントエンドからのみアクセスできる仕組み（方式の検討から） | アプリ・cdktn | 設計の承認 | API-23 |
-| 14 | cdktn の改善（任意）: CodeBuild のプロジェクト作成の `OAuthProviderException`（構築のたびに 1 回目で失敗し再実行で成功。`time_sleep` で待つ案、provider の追加が必要）、deploy のたびに出る差分の整理（§8.5）、Google のアラートの部品の型から使えない比較（`COMPARISON_GE` など）を外す | cdktn | 実施の承認 | — |
+| 14 | cdktn の改善（任意）: ~~CodeBuild とプールの作成待ち~~ **対策済み（2026-10-25、未 deploy）**。残り: deploy のたびに出る差分の整理（§8.5）、Google のアラートの部品の型から使えない比較（`COMPARISON_GE` など）を外す、Azure の DevOps のプールの作成がサブネットの更新中で失敗することがある（Azure の一時的なエラー、再実行で成功） | cdktn | 実施の承認 | — |
 
 ### 8.3 deploy のときに確認すること（未検証の前提）
 
@@ -255,9 +256,24 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 | 手順書 | deploy が 3 回であること（1 回目: 全部 `false`、2 回目: `azureSecretReady`、3 回目: `readinessProbe`・`journalPrune.enabled`）と理由を両リポジトリに明記。3 回目が必須なのは `readinessProbe` だけで、削除ジョブは前倒しも可能だが、API のデプロイ前にスケジュールの時刻が来ると失敗するため一緒に作る（ユーザー判断で 3 回のまま） |
 | 終了時 | ユーザーが destroy。`apiContainerConfig` の 3 つのフラグは `false` に戻し済み。次回は Cloud SQL の名前を変える |
 
+### 8.5.4 2026-10-25 のクラスタ構成の構築と確認
+
+| 項目 | 内容 |
+|---|---|
+| 構成 | dev、`topology: cluster`、VPN `haBgp`、プライベート DNS、HTTPS のロードバランサー、公開 DNS あり |
+| deploy | 1 回目: CodeBuild の `OAuthProviderException`、Azure DevOps のプールの作成失敗（サブネットが更新中）とパイプラインの `Agent pool ... was not found`。再実行で成功。**原因**: CodeBuild のプロジェクトがサービスロールのポリシーを、パイプラインがプールを待っていなかった（依存関係の抜け）→ 作成待ちを追加（cdktn） |
+| シークレット | 新しい `scripts/secrets-set.sh <cloud>` で 3 クラウドに入れた。レプリケーションのパスワードも全ノード共通に変更（§3 の決定） |
+| DB のセットアップ | AWS の VM 1 台から手作業（`nodes.env` と 6 本のスクリプト）。つまずき: (1) Azure の管理者ユーザーは `root` ではなく `azuredbadmin`（Azure は `root` を使えない）。(2) `replication-setup.sh` がタイムアウトなしで止まった: AWS の DB の SG の送信が 80/443 だけで、Aurora から他の DB の 5432 に接続できなかった → SG を修正。(3) Cloud SQL が `aurora-postgres.aws.inner` を引けない（`could not translate host name`） |
+| Cloud SQL と DNS | Cloud SQL は Google のサービス提供側の VPC にあり、この VPC のプライベートゾーンを使えない（公開 DNS だけ）。Aurora のエンドポイントは公開 DNS でプライベート IP を返すので引けるが、Azure の DB の名前は公開 DNS では `privatelink` の別名までで IP が返らない。Aurora と Azure の DB はプライベート DNS を引ける。Service Networking のピアリングされた DNS ドメイン（`aws.inner.`、`azure.inner.`）を手で追加したところ、Cloud SQL も名前で接続できた（Google のドキュメントでは Cloud SQL は対象外とされているが、PostgreSQL の論理レプリケーションで動作）→ cdktn に追加、`cluster-setup.sh` はすべてプライベート DNS の名前で接続 |
+| レプリケーション | 6 つのサブスクリプションが有効、スロットはすべて active、遅れなし、エラー 0。プライマリ aws（epoch 1） |
+| 動作確認 | 3 クラウドで `/healthz`（同じ版）と `/readyz`（200）。Google の API で書き込み（AWS の DB で実行）、Azure と AWS の API から読めた |
+| 手順の改善 | DB のセットアップを `scripts/cluster-setup.sh <cloud>` の 1 コマンドに（ローカルの 3 ノードで、再実行・プライマリの切り替えと戻し・届かない DB で 6 秒で停止・シークレットストアからの読み込みを確認）。接続のタイムアウト（`PGCONNECT_TIMEOUT`、サブスクリプションの `connect_timeout`）を追加。手順書の deploy が 3 回であることを明記 |
+| destroy | Azure の DB のパラメータ（`wal_level`）の destroy が 2 回 `InternalServerError`（パラメータの destroy はサーバーの値を戻す操作で、論理レプリケーションのスロットがあると `wal_level` を戻す再起動が成功しないためと推定）。Google のサブネット（既知の問題）と同時に止まり、Azure のリソースが残った。パラメータを state から外し、Azure だけ `terraform destroy -target` で先に削除。**対策**: cdktn に `npm run before-destroy`（`scripts/before-destroy.sh`、パラメータを state から外す）を追加し、operations の destroy の手順に、待ちのあるクラウドを残して他を先に削除する方法を追加 |
+| 終了時 | ユーザーが destroy（手で追加したピアリングされた DNS ドメインは先に削除）。設定は HTTP・singleTunnel・3 つのフラグ `false` に戻した（`topology` は `cluster` のまま） |
+
 ### 8.6 ユーザーの回答待ち
 
 | # | 内容 |
 |---|---|
-| 1 | 次回の dev の構築の時期（§8.2 の 6 の残り以降の検証）。課金を伴う |
+| 1 | 次回の dev の構築（§8.2 の 8c: HTTP・singleTunnel での再確認）。課金を伴う |
 | 2 | 両リポジトリの未コミットの変更（§8.1）のコミットと push |

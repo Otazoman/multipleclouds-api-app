@@ -18,6 +18,9 @@ fi
 # shellcheck disable=SC1090
 source "$NODES_FILE"
 
+# Fail fast when a database is unreachable (psql waits indefinitely otherwise)
+export PGCONNECT_TIMEOUT="${PGCONNECT_TIMEOUT:-10}"
+
 : "${NODES:?NODES must list the participating nodes, e.g. \"aws google azure\"}"
 : "${DB_NAME:?DB_NAME is required}"
 

@@ -90,35 +90,17 @@ scripts/secrets-set.sh aws        # 他のクラウドでは google / azure
 `AWS_REPL_SECRET`、`GOOGLE_API_SECRET`、`GOOGLE_REPL_SECRET`、`AZURE_KEY_VAULT`、`AZURE_API_SECRET`、
 `AZURE_REPL_SECRET`、`AWS_REGION`）。
 
-### ノード設定（クラスタ）
+### ノード設定（手作業のとき）
 
-**クラウド単体**（各クラウドが自分のデータベースだけで動く）の場合は不要です。各クラウドの VM で
-`scripts/node-setup.sh <cloud>` を実行します（3 章）。
+**クラウド単体**は各クラウドの VM で `scripts/node-setup.sh <cloud>`、**クラスタ**はどれか1台の VM で
+`scripts/cluster-setup.sh` を実行します（3 章）。どちらもノード設定のファイルは不要です。
 
-クラスタでは、どれか**1台**の VM（どのクラウドでもよい）でスクリプトを実行します。VPN とプライベート DNS を
-通して、すべてのデータベースに接続できます。サインインするのは、そのクラウドの CLI だけです。ノード設定を作ります
-（接続先はインフラの dev 環境のプライベート DNS の名前、管理者ユーザーはインフラの `.env.<環境名>` の値）：
+3 章のスクリプトを手作業で実行する場合（名前が異なる、別のインフラなど）は、ノード設定を作り、パスワードは
+シェルで export します（ファイルには書きません。ファイルは git の管理対象外です）：
 
 ```bash
-cat > replication/nodes.env <<'EOF'
-NODES="${NODES:-aws google azure}"
-DB_NAME=appdb
-NODE_AWS_HOST=aurora-postgres.aws.inner
-NODE_AWS_ADMIN_USER=root
-NODE_AWS_REPL_USER=app_repl
-NODE_AWS_API_USER=app_api
-NODE_GOOGLE_HOST=cloudsql-postgres.google.inner
-NODE_GOOGLE_ADMIN_USER=root
-NODE_GOOGLE_REPL_USER=app_repl
-NODE_GOOGLE_API_USER=app_api
-NODE_AZURE_HOST=postgres-prod.azure.inner
-NODE_AZURE_ADMIN_USER=root
-NODE_AZURE_REPL_USER=app_repl
-NODE_AZURE_API_USER=app_api
-EOF
-for h in aurora-postgres.aws.inner cloudsql-postgres.google.inner postgres-prod.azure.inner; do
-  pg_isready -h "$h" -p 5432    # すべて "accepting connections" になること
-done
+cp replication/nodes.env.sample replication/nodes.env
+export NODE_<N>_ADMIN_PASSWORD=... NODE_<N>_API_PASSWORD=... NODE_<N>_REPL_PASSWORD=...   # ノードごと
 ```
 
 | 設定 | 値 |
@@ -128,28 +110,54 @@ done
 | `NODE_<N>_ADMIN_USER` | インフラで作成したデータベースの管理者ユーザー |
 | `NODE_<N>_REPL_USER`, `NODE_<N>_API_USER` | 特に理由がなければ `app_repl` / `app_api` のまま |
 
-`replication/nodes.env` は git の管理対象外です。パスワードはファイルに書かず、スクリプトを実行する直前に
-シェルで export します。AWS の VM の場合（Google Cloud の VM では `gcloud secrets versions access latest
---secret=multicloud-google-secret-db-api-password` と `...-db-repl-password` で読みます）：
-
-```bash
-api="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
-  --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
-repl="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
-  --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
-for n in AWS GOOGLE AZURE; do
-  # DB の管理者パスワード（インフラの .env.<環境名>）：入力する（表示されない）
-  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo
-  export "NODE_${n}_ADMIN_PASSWORD=$v" "NODE_${n}_API_PASSWORD=$api" "NODE_${n}_REPL_PASSWORD=$repl"
-done
-unset api repl v
-```
-
-クラスタに入らないクラウドは除き、終わったらクラウドからサインアウトします。
-
 ## 3. データベースのセットアップ
 
-次の順に実行します。どのスクリプトも再実行して問題ありません。
+### クラスタ：`scripts/cluster-setup.sh`
+
+すべてのクラウドにパスワードを入れた後（2 章）、クラスタのどれか**1台**の VM で、そのクラウドの CLI だけに
+サインインして実行します：
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # clone 済みなら git pull
+cd multipleclouds-api-app
+git switch <リリースするブランチ>        # 例：dev
+scripts/cluster-setup.sh aws            # この VM のクラウド：aws / google / azure
+```
+
+| 質問 | 答え方 |
+| --- | --- |
+| `Database admin password of <node> (<user>)` | そのノードの管理者パスワード（インフラの `.env.<環境名>`。表示されない）。Enter で前のノードと同じ値 |
+| `Set up the cluster ... ? [y/N]` | 設定を確認して `y` |
+
+処理の内容：
+
+| 段階 | 内容 |
+| --- | --- |
+| 接続 | すべてのデータベースにプライベート DNS の名前（`aurora-postgres.aws.inner`、`cloudsql-postgres.google.inner`、`postgres-prod.azure.inner`）で接続。管理者ユーザーは `root`、`root`、`azuredbadmin`。データベース同士も同じ名前で接続する（Cloud SQL はインフラのピアリングされた DNS ドメイン経由）。接続できないデータベースがあれば、その名前を表示してすぐ止まる |
+| パスワード | API とレプリケーションのパスワードはこのクラウドのシークレットストアから読む。管理者のパスワードは入力。ファイルには書かない |
+| スクリプト | `database-create.sh`、`migrate.sh`、`api-role-setup.sh`、`replication-setup.sh`、`switchover.sh <最初のプライマリ>`、`replication-status.sh` |
+| プライマリ | 初回はこの VM のクラウド（`--primary <node>` で変更可）。2 回目以降は現在のプライマリのまま。`--primary` で別のノードを指定すると計画的な切り替えになる |
+
+最後に表示される状態で、すべてのノードのプライマリと世代番号が同じ、すべてのサブスクリプションが有効、すべての
+スロットが active、エラー件数が `0` であることを確認します。再実行して問題ありません（リリースのマイグレーションなど）。
+名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`NODES`、`NODE_<NODE>_HOST`、
+`NODE_<NODE>_ADMIN_USER`、`NODE_<NODE>_REPL_HOST`、シークレットの名前は `secrets-set.sh` と同じ）。
+
+**管理者ユーザーについて。** 既定値はインフラの dev 環境の値です（インフラの `.env.<環境名>` の
+`AWSDB_ROOT_USER`、`GOOGLEDB_ROOT_USER`、`AZUREDB_ROOT_USER`：`root`、`root`、`azuredbadmin`。Azure では `root`
+を使えません）。別の名前でデータベースを作った場合は、実行するときに指定します（確認の前に表示される設定に含まれます）：
+
+```bash
+NODE_AZURE_ADMIN_USER=<管理者ユーザー> scripts/cluster-setup.sh aws
+```
+
+指定するのは、データベースを作ったときの名前です。後から `.env.<環境名>` だけを変えても、既存の管理者の名前は
+変わりません。名前が違うと `database-create.sh` が `password authentication failed for user "..."` で止まります。
+何も変更されないので、正しい名前で再実行してください。
+
+### 手作業
+
+`replication/nodes.env` とパスワードの export（2 章）の後、次の順に実行します。どのスクリプトも再実行して問題ありません。
 
 ```bash
 scripts/database-create.sh     # 全ノードにデータベース（DB_NAME）を作成

@@ -105,36 +105,19 @@ infrastructure's dev environment; override them in the environment
 `GOOGLE_REPL_SECRET`, `AZURE_KEY_VAULT`, `AZURE_API_SECRET`,
 `AZURE_REPL_SECRET`, `AWS_REGION`).
 
-### Node settings (a cluster)
+### Node settings (by hand)
 
-**Clouds alone** (each cloud on its own database): skip this and run
-`scripts/node-setup.sh <cloud>` on each cloud's VM (section 3).
+**Clouds alone**: run `scripts/node-setup.sh <cloud>` on each cloud's VM
+(section 3). **A cluster**: run `scripts/cluster-setup.sh` on one VM
+(section 3). Neither needs a node settings file.
 
-For a cluster, run the scripts on **one** VM of any cloud: through the VPN
-and the private DNS it reaches every database. Sign in to that cloud's CLI
-only. Create the node settings (the private DNS names of the
-infrastructure's dev environment; the admin users from its `.env.<env>`):
+To run the scripts of section 3 by hand instead (e.g. other names or
+another infrastructure), create the node settings and export the passwords
+in the shell; do not write passwords in the file (it is ignored by git):
 
 ```bash
-cat > replication/nodes.env <<'EOF'
-NODES="${NODES:-aws google azure}"
-DB_NAME=appdb
-NODE_AWS_HOST=aurora-postgres.aws.inner
-NODE_AWS_ADMIN_USER=root
-NODE_AWS_REPL_USER=app_repl
-NODE_AWS_API_USER=app_api
-NODE_GOOGLE_HOST=cloudsql-postgres.google.inner
-NODE_GOOGLE_ADMIN_USER=root
-NODE_GOOGLE_REPL_USER=app_repl
-NODE_GOOGLE_API_USER=app_api
-NODE_AZURE_HOST=postgres-prod.azure.inner
-NODE_AZURE_ADMIN_USER=root
-NODE_AZURE_REPL_USER=app_repl
-NODE_AZURE_API_USER=app_api
-EOF
-for h in aurora-postgres.aws.inner cloudsql-postgres.google.inner postgres-prod.azure.inner; do
-  pg_isready -h "$h" -p 5432    # every database: "accepting connections"
-done
+cp replication/nodes.env.sample replication/nodes.env
+export NODE_<N>_ADMIN_PASSWORD=... NODE_<N>_API_PASSWORD=... NODE_<N>_REPL_PASSWORD=...   # for each node
 ```
 
 | Setting | Value |
@@ -144,30 +127,61 @@ done
 | `NODE_<N>_ADMIN_USER` | Database admin user created by the infrastructure |
 | `NODE_<N>_REPL_USER`, `NODE_<N>_API_USER` | Keep `app_repl` / `app_api` unless you have a reason to change them |
 
-`replication/nodes.env` is ignored by git. Do not write passwords in it;
-export them in the shell just before running the scripts. On the AWS VM
-(on a Google Cloud VM, read them with `gcloud secrets versions access latest
---secret=multicloud-google-secret-db-api-password` and `...-db-repl-password`):
-
-```bash
-api="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
-  --secret-id multicloud-aws-secret-db-api-password --query SecretString --output text)"
-repl="$(aws secretsmanager get-secret-value --region ap-northeast-1 \
-  --secret-id multicloud-aws-secret-db-repl-password --query SecretString --output text)"
-for n in AWS GOOGLE AZURE; do
-  # Database admin password (.env.<env> of the infrastructure): typed, not echoed
-  read -rsp "NODE_${n}_ADMIN_PASSWORD: " v && echo
-  export "NODE_${n}_ADMIN_PASSWORD=$v" "NODE_${n}_API_PASSWORD=$api" "NODE_${n}_REPL_PASSWORD=$repl"
-done
-unset api repl v
-```
-
-Leave out the clouds that are not in the cluster, and sign out of the cloud
-when done.
-
 ## 3. Set up the databases
 
-Run in this order. Every script is safe to run again.
+### A cluster: `scripts/cluster-setup.sh`
+
+Run on **one** VM of any cloud of the cluster, signed in to that cloud's
+CLI only, after the passwords are set on every cloud (section 2):
+
+```bash
+git clone https://github.com/Otazoman/multipleclouds-api-app.git   # or git pull
+cd multipleclouds-api-app
+git switch <branch to release>           # e.g. dev
+scripts/cluster-setup.sh aws             # the cloud of this VM: aws / google / azure
+```
+
+| Prompt | Answer |
+| --- | --- |
+| `Database admin password of <node> (<user>)` | The node's admin password (`.env.<env>` of the infrastructure; not echoed). Enter repeats the previous node's |
+| `Set up the cluster ... ? [y/N]` | Check the settings and answer `y` |
+
+What it does:
+
+| Step | Details |
+| --- | --- |
+| Connect | Every database by its private DNS name (`aurora-postgres.aws.inner`, `cloudsql-postgres.google.inner`, `postgres-prod.azure.inner`); admin users `root`, `root`, `azuredbadmin`. The databases reach each other by the same names (Cloud SQL through the infrastructure's peered DNS domains). Stops at once, naming the database, when one is not reachable |
+| Passwords | API and replication passwords from this cloud's secret store; the admin passwords are asked. Nothing is written to a file |
+| Scripts | `database-create.sh`, `migrate.sh`, `api-role-setup.sh`, `replication-setup.sh`, `switchover.sh <first primary>`, `replication-status.sh` |
+| Primary | First setup: the cloud of this VM, or `--primary <node>`. Later runs keep the current primary unless `--primary` names another node (a planned switchover) |
+
+Check the status it prints at the end: on every node the same primary and
+epoch, every subscription enabled, every slot active, no errors. Safe to run
+again (e.g. a release's migrations). The names default to the
+infrastructure's dev environment; override them in the environment
+(`NODES`, `NODE_<NODE>_HOST`, `NODE_<NODE>_ADMIN_USER`,
+`NODE_<NODE>_REPL_HOST`, and the secret names as for `secrets-set.sh`).
+
+**Admin users.** The defaults are those of the infrastructure's dev
+environment (`AWSDB_ROOT_USER`, `GOOGLEDB_ROOT_USER`, `AZUREDB_ROOT_USER` in
+its `.env.<env>`: `root`, `root`, `azuredbadmin`; Azure does not accept
+`root`). When the databases were created with other names, give them when
+running the script (the settings shown before the confirmation include
+them):
+
+```bash
+NODE_AZURE_ADMIN_USER=<admin user> scripts/cluster-setup.sh aws
+```
+
+Give the name the database was created with: changing `.env.<env>` later
+does not rename an existing admin. A wrong name stops `database-create.sh`
+with `password authentication failed for user "..."`; nothing is changed,
+so run again with the right name.
+
+### By hand
+
+With `replication/nodes.env` and the passwords exported (section 2), run in
+this order. Every script is safe to run again.
 
 ```bash
 scripts/database-create.sh     # create the database (DB_NAME) on every node
