@@ -143,6 +143,16 @@ scripts/cluster-setup.sh aws            # この VM のクラウド：aws / goog
 名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`NODES`、`NODE_<NODE>_HOST`、
 `NODE_<NODE>_ADMIN_USER`、`NODE_<NODE>_REPL_HOST`、シークレットの名前は `secrets-set.sh` と同じ）。
 
+**プライベート DNS が無いとき。** インフラがプライベート DNS 無しでクラスタを動かしている場合（費用を抑えるとき。インフラの
+operations の「プライベート DNS の無いクラスタ」）は、プライベート DNS の名前を引けません。インフラの deploy が表示した 1 行
+（出力 `cluster-setup-hosts`）をコマンドの前に付けると、データベース同士もその接続先で接続します：
+
+```bash
+NODE_AWS_HOST=<Aurora のエンドポイント> NODE_GOOGLE_HOST=<Cloud SQL の IP> NODE_AZURE_HOST=<Azure の IP> scripts/cluster-setup.sh aws
+```
+
+Azure のデータベースの IP が変わったときは、新しい 1 行を付けて再実行します。
+
 **管理者ユーザーについて。** 既定値はインフラの dev 環境の値です（インフラの `.env.<環境名>` の
 `AWSDB_ROOT_USER`、`GOOGLEDB_ROOT_USER`、`AZUREDB_ROOT_USER`：`root`、`root`、`azuredbadmin`。Azure では `root`
 を使えません）。別の名前でデータベースを作った場合は、実行するときに指定します（確認の前に表示される設定に含まれます）：

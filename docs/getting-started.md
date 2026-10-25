@@ -162,6 +162,18 @@ infrastructure's dev environment; override them in the environment
 (`NODES`, `NODE_<NODE>_HOST`, `NODE_<NODE>_ADMIN_USER`,
 `NODE_<NODE>_REPL_HOST`, and the secret names as for `secrets-set.sh`).
 
+**Without the private DNS.** When the infrastructure runs the cluster
+without the private DNS (to save its cost; infrastructure operations, "A
+cluster without the private DNS"), the private DNS names do not resolve:
+put the line its deploy printed (output `cluster-setup-hosts`) before the
+command, and the databases reach each other by those addresses:
+
+```bash
+NODE_AWS_HOST=<Aurora endpoint> NODE_GOOGLE_HOST=<Cloud SQL IP> NODE_AZURE_HOST=<Azure IP> scripts/cluster-setup.sh aws
+```
+
+If the Azure database's address changes, run it again with the new line.
+
 **Admin users.** The defaults are those of the infrastructure's dev
 environment (`AWSDB_ROOT_USER`, `GOOGLEDB_ROOT_USER`, `AZUREDB_ROOT_USER` in
 its `.env.<env>`: `root`, `root`, `azuredbadmin`; Azure does not accept
