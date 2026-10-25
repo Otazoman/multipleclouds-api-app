@@ -9,13 +9,13 @@ environment and local testing, see the [README](../README.md).
 
 | # | Step | Where | Details |
 | --- | --- | --- | --- |
-| 1 | Build the infrastructure with the API flags off (`azureSecretReady`, `readinessProbe`, `journalPrune.enabled`) | Infrastructure repository: `cdktn diff`, `cdktn deploy` | Infrastructure getting-started and operations ("Deploy", "Deploy again after a destroy") |
+| 1 | Build the infrastructure at build stage 1 (`npm run build-stage` shows it) | Infrastructure repository: `cdktn diff`, `cdktn deploy` | Infrastructure getting-started and operations ("Deploy", "Deploy again after a destroy") |
 | 2 | Set the passwords on every cloud (the same values): `scripts/secrets-set.sh <cloud>` | Each cloud's Cloud Shell or VM; Azure only from its VM (the Key Vault is in the VNet) | Section 2 below |
-| 3 | Azure: `azureSecretReady: true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Secrets" |
+| 3 | `npm run build-stage -- 2`, `cdktn deploy` (the Azure Container App then references the Key Vault secret) | Infrastructure repository | Infrastructure operations, "Build an environment" |
 | 4 | Set up the databases | Clouds alone: each cloud's VM. A cluster: one VM of any cloud (the databases are private) | Sections 2–3 below |
 | 5 | Deploy the API: merge into the environment's branch; right after the infrastructure is built (nothing new to merge), run each cloud's pipeline once | GitHub (pull request) or each cloud's console / CLI; each cloud's CI/CD builds and deploys | Section 5, [operations.md](operations.md#releases) |
 | 6 | Verify | Your machine | Section 6 |
-| 7 | `readinessProbe` and `journalPrune.enabled` `true`, `cdktn deploy` | Infrastructure repository | Infrastructure operations, "Build an environment" (step 6) |
+| 7 | `npm run build-stage -- 3`, `cdktn deploy` (readiness checks on `/readyz`, journal pruning jobs) | Infrastructure repository | Infrastructure operations, "Build an environment" (step 8) |
 
 Steps 1–3 build the infrastructure; from step 4 on it is this repository's work.
 `cdktn deploy` runs three times: steps 1, 3 and 7 (the infrastructure
@@ -162,6 +162,18 @@ infrastructure's dev environment; override them in the environment
 (`NODES`, `NODE_<NODE>_HOST`, `NODE_<NODE>_ADMIN_USER`,
 `NODE_<NODE>_REPL_HOST`, and the secret names as for `secrets-set.sh`).
 
+**Without the private DNS.** When the infrastructure runs the cluster
+without the private DNS (to save its cost; infrastructure operations, "A
+cluster without the private DNS"), the private DNS names do not resolve:
+put the line its deploy printed (output `cluster-setup-hosts`) before the
+command, and the databases reach each other by those addresses:
+
+```bash
+NODE_AWS_HOST=<Aurora endpoint> NODE_GOOGLE_HOST=<Cloud SQL IP> NODE_AZURE_HOST=<Azure IP> scripts/cluster-setup.sh aws
+```
+
+If the Azure database's address changes, run it again with the new line.
+
 **Admin users.** The defaults are those of the infrastructure's dev
 environment (`AWSDB_ROOT_USER`, `GOOGLEDB_ROOT_USER`, `AZUREDB_ROOT_USER` in
 its `.env.<env>`: `root`, `root`, `azuredbadmin`; Azure does not accept
@@ -272,15 +284,18 @@ The other `DB_<NODE>_*` settings default to this cloud's values; set them
 only where a node differs (e.g. `DB_<NODE>_SSLMODE`).
 
 Two settings of the infrastructure repository depend on the order of the
-first deployment:
+first deployment; its build stage (`npm run build-stage -- <stage>`) turns
+them on:
 
-- `azureSecretReady`: an Azure Container App cannot start while the Key
-  Vault secret it references does not exist. Deploy the infrastructure
-  with `false`, set the secret from the Azure VM, then deploy with `true`.
-- `readinessProbe`: the placeholder images answer only `/`. After the API
-  has been deployed (step 5), set it to `true` and deploy the
-  infrastructure: the load balancers and platforms then use `/readyz`
-  (readiness, including the migrations) and `/healthz` (liveness).
+- Stage 2, `azureSecretReady`: an Azure Container App cannot start while
+  the Key Vault secret it references does not exist. Deploy the
+  infrastructure at stage 1, set the secret from the Azure VM, then deploy
+  at stage 2.
+- Stage 3, `readinessProbe` (and the journal pruning jobs): the
+  placeholder images answer only `/`. After the API has been deployed
+  (step 5), deploy the infrastructure at stage 3: the load balancers and
+  platforms then use `/readyz` (readiness, including the migrations) and
+  `/healthz` (liveness).
 
 ## 5. Deploy
 
@@ -309,7 +324,9 @@ gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch
 
 Azure: in Azure DevOps, open the pipeline `multicloud-api-deploy`, **Run
 pipeline**, branch `dev`. Use the same commands to run one cloud's build
-again (e.g. after it failed).
+again (e.g. after it failed). The results are emailed: Azure DevOps to the
+person who ran the pipeline, AWS and Google Cloud to the infrastructure's
+alert recipients (`ALERT_EMAILS`).
 
 ## 6. Verify
 

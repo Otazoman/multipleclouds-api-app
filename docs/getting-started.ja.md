@@ -8,13 +8,13 @@
 
 | # | 作業 | 場所 | 詳細 |
 | --- | --- | --- | --- |
-| 1 | API のフラグ（`azureSecretReady`、`readinessProbe`、`journalPrune.enabled`）を無効にしてインフラを構築 | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
+| 1 | 構築の段階 1 でインフラを構築（`npm run build-stage` で確認） | インフラのリポジトリ：`cdktn diff`、`cdktn deploy` | インフラの getting-started と operations（「deploy」「destroy の後にもう一度 deploy する」） |
 | 2 | すべてのクラウドにパスワードを入れる（同じ値）：`scripts/secrets-set.sh <cloud>` | 各クラウドの Cloud Shell か VM。Azure は VM から（Key Vault は VNet の中） | 下の 2 章 |
-| 3 | Azure：`azureSecretReady: true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「シークレット」 |
+| 3 | `npm run build-stage -- 2` の後、`cdktn deploy`（Azure の Container App が Key Vault のシークレットを参照する） | インフラのリポジトリ | インフラの operations の「環境を構築する」 |
 | 4 | データベースのセットアップ | クラウド単体：各クラウドの VM。クラスタ：どれか1台の VM（データベースはプライベート） | 下の 2〜3 章 |
 | 5 | API のデプロイ：環境のブランチにマージ。インフラを構築した直後（マージするものがない）は、各クラウドのパイプラインを 1 回実行 | GitHub（プルリクエスト）、または各クラウドのコンソール / CLI。各クラウドの CI/CD がビルドしてデプロイ | 5 章、[operations.ja.md](operations.ja.md#リリース) |
 | 6 | 確認 | 自分の端末 | 6 章 |
-| 7 | `readinessProbe` と `journalPrune.enabled` を `true` にして `cdktn deploy` | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 6） |
+| 7 | `npm run build-stage -- 3` の後、`cdktn deploy`（`/readyz` のヘルスチェック、変更履歴の削除ジョブ） | インフラのリポジトリ | インフラの operations の「環境を構築する」（手順 8） |
 
 1〜3 がインフラの構築で、4 からがこのリポジトリの作業です。
 `cdktn deploy` は 1・3・7 の 3 回実行します（理由はインフラの operations の「環境を構築する」）。その後のリリースはマージだけです。
@@ -143,6 +143,16 @@ scripts/cluster-setup.sh aws            # この VM のクラウド：aws / goog
 名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`NODES`、`NODE_<NODE>_HOST`、
 `NODE_<NODE>_ADMIN_USER`、`NODE_<NODE>_REPL_HOST`、シークレットの名前は `secrets-set.sh` と同じ）。
 
+**プライベート DNS が無いとき。** インフラがプライベート DNS 無しでクラスタを動かしている場合（費用を抑えるとき。インフラの
+operations の「プライベート DNS の無いクラスタ」）は、プライベート DNS の名前を引けません。インフラの deploy が表示した 1 行
+（出力 `cluster-setup-hosts`）をコマンドの前に付けると、データベース同士もその接続先で接続します：
+
+```bash
+NODE_AWS_HOST=<Aurora のエンドポイント> NODE_GOOGLE_HOST=<Cloud SQL の IP> NODE_AZURE_HOST=<Azure の IP> scripts/cluster-setup.sh aws
+```
+
+Azure のデータベースの IP が変わったときは、新しい 1 行を付けて再実行します。
+
 **管理者ユーザーについて。** 既定値はインフラの dev 環境の値です（インフラの `.env.<環境名>` の
 `AWSDB_ROOT_USER`、`GOOGLEDB_ROOT_USER`、`AZUREDB_ROOT_USER`：`root`、`root`、`azuredbadmin`。Azure では `root`
 を使えません）。別の名前でデータベースを作った場合は、実行するときに指定します（確認の前に表示される設定に含まれます）：
@@ -237,13 +247,14 @@ scripts/node-setup.sh aws               # Google・Azure の VM では google / 
 その他の `DB_<NODE>_*` は、省略するとこのクラウドの値と同じになります。異なるノードだけ
 設定してください（例：`DB_<NODE>_SSLMODE`）。
 
-インフラのリポジトリの次の2つの設定は、初回のデプロイの順番に関係します：
+インフラのリポジトリの次の2つの設定は、初回のデプロイの順番に関係します。インフラの構築の段階
+（`npm run build-stage -- <段階>`）で有効になります：
 
-- `azureSecretReady`：Azure の Container App は、参照する Key Vault のシークレットがないと起動できません。
-  `false` でインフラを deploy し、Azure の VM からシークレットを設定してから、`true` で deploy します。
-- `readinessProbe`：仮のイメージは `/` にしか応答しません。API をデプロイした後（手順 5）に `true` にして
-  インフラを deploy すると、ロードバランサーとコンテナ基盤が `/readyz`（マイグレーションを含む readiness）と
-  `/healthz`（liveness）を使います。
+- 段階 2、`azureSecretReady`：Azure の Container App は、参照する Key Vault のシークレットがないと起動できません。
+  段階 1 でインフラを deploy し、Azure の VM からシークレットを設定してから、段階 2 で deploy します。
+- 段階 3、`readinessProbe`（と変更履歴の削除ジョブ）：仮のイメージは `/` にしか応答しません。API をデプロイした後
+  （手順 5）に段階 3 でインフラを deploy すると、ロードバランサーとコンテナ基盤が `/readyz`（マイグレーションを含む
+  readiness）と `/healthz`（liveness）を使います。
 
 ## 5. デプロイ
 
@@ -265,7 +276,8 @@ gcloud builds triggers run github-push-trigger --region=asia-northeast1 --branch
 ```
 
 Azure：Azure DevOps でパイプライン `multicloud-api-deploy` を開き、**Run pipeline** でブランチ `dev` を指定します。
-1 つのクラウドのビルドをやり直すとき（失敗したときなど）も同じです。
+1 つのクラウドのビルドをやり直すとき（失敗したときなど）も同じです。結果はメールで届きます（Azure DevOps は
+パイプラインを実行した人に、AWS と Google Cloud はインフラのアラートの通知先 `ALERT_EMAILS` に）。
 
 ## 6. 確認
 
