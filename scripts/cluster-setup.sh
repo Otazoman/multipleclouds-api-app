@@ -14,11 +14,14 @@
 # written to a file or kept in the shell history. Nothing is written to
 # replication/nodes.env. Safe to run again (e.g. for a release's migrations).
 #
-# Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node>]
+# Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node> | --status]
 #   --primary   first primary (default: the cloud of this VM). Once the
 #               cluster has a primary, it is kept unless --primary names
 #               another node, which then becomes the primary (a planned
 #               switchover, docs/operations.md).
+#   --status    only show the cluster's state (scripts/replication-status.sh),
+#               e.g. after a database failover; asks for the admin passwords
+#               only and changes nothing
 #
 # The settings default to the dev environment of the infrastructure
 # repository; override them in the environment if needed:
@@ -37,7 +40,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  echo "Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node>]" >&2
+  echo "Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node> | --status]" >&2
   exit 1
 }
 
@@ -48,6 +51,7 @@ case "$cloud" in
 esac
 shift
 primary=""
+status_only=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --primary)
@@ -55,9 +59,14 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$primary" ]] || usage
       shift 2
       ;;
+    --status)
+      status_only=1
+      shift
+      ;;
     *) usage ;;
   esac
 done
+[[ -z "$primary" || -z "$status_only" ]] || usage
 
 NODES="${NODES:-aws google azure}"
 read -r -a node_list <<< "$NODES"
@@ -130,6 +139,8 @@ need_store=""
 for node in "${node_list[@]}"; do
   [[ -n "$(node_var "$node" API_PASSWORD)" && -n "$(node_var "$node" REPL_PASSWORD)" ]] || need_store=1
 done
+# --status reads the databases only, as their admins
+[[ -z "$status_only" ]] || need_store=""
 if [[ -n "$need_store" ]]; then
   echo "== Reading the passwords from the $cloud secret store"
   AWS_REGION="${AWS_REGION:-ap-northeast-1}"
@@ -203,6 +214,14 @@ for node in "${node_list[@]}"; do
   previous="$value"
 done
 unset value previous
+
+# --status: show the state and stop
+if [[ -n "$status_only" ]]; then
+  echo
+  echo "== scripts/replication-status.sh"
+  "$SCRIPT_DIR/replication-status.sh"
+  exit 0
+fi
 
 # 4. Confirm
 echo

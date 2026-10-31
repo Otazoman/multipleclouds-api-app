@@ -140,6 +140,7 @@ scripts/cluster-setup.sh aws            # この VM のクラウド：aws / goog
 
 最後に表示される状態で、すべてのノードのプライマリと世代番号が同じ、すべてのサブスクリプションが有効、すべての
 スロットが active、エラー件数が `0` であることを確認します。再実行して問題ありません（リリースのマイグレーションなど）。
+`scripts/cluster-setup.sh aws --status` は、その状態だけを表示します（DB のフェイルオーバーの後など）。管理者のパスワードだけを聞き、何も変更しません。
 名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`NODES`、`NODE_<NODE>_HOST`、
 `NODE_<NODE>_ADMIN_USER`、`NODE_<NODE>_REPL_HOST`、シークレットの名前は `secrets-set.sh` と同じ）。
 
