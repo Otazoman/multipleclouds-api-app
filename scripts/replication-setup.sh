@@ -158,6 +158,21 @@ SQL
 SELECT format('ALTER SUBSCRIPTION %I REFRESH PUBLICATION WITH (copy_data = false)', :'sub') \gexec
 SELECT format('ALTER SUBSCRIPTION %I SET (synchronous_commit = on)', :'sub') \gexec
 SQL
+      # Failover slot (below): set on subscriptions created before it. The
+      # option can change only while the subscription is disabled
+      failover="$(psql_admin "$subscriber" -At -v sub="$sub" <<'SQL'
+SELECT subfailover FROM pg_subscription
+ WHERE subname = :'sub' AND subdbid = (SELECT oid FROM pg_database WHERE datname = current_database());
+SQL
+)"
+      if [[ "$failover" == "f" ]]; then
+        echo "   $sub: failover slot"
+        psql_admin "$subscriber" -v sub="$sub" <<'SQL'
+SELECT format('ALTER SUBSCRIPTION %I DISABLE', :'sub') \gexec
+SELECT format('ALTER SUBSCRIPTION %I SET (failover = true)', :'sub') \gexec
+SELECT format('ALTER SUBSCRIPTION %I ENABLE', :'sub') \gexec
+SQL
+      fi
       continue
     fi
 
@@ -169,10 +184,14 @@ SQL
     fi
     echo "   $sub: create (copy_data = $copy_data)"
 
+    # failover = true: the slot on the publisher is kept on its high
+    # availability standby (PostgreSQL 17+, e.g. Azure with
+    # sync_replication_slots), so the subscription continues after the
+    # publisher fails over. No effect without a standby
     SUB_CONNINFO="$conninfo" psql_admin "$subscriber" -v sub="$sub" \
       -v pub="$PUBLICATION" -v copy_data="$copy_data" <<'SQL'
 \getenv conninfo SUB_CONNINFO
-SELECT format('CREATE SUBSCRIPTION %I CONNECTION %L PUBLICATION %I WITH (origin = none, copy_data = %s, synchronous_commit = on)',
+SELECT format('CREATE SUBSCRIPTION %I CONNECTION %L PUBLICATION %I WITH (origin = none, copy_data = %s, synchronous_commit = on, failover = true)',
               :'sub', :'conninfo', :'pub', :'copy_data') \gexec
 SQL
   done
