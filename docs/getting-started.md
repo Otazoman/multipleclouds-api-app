@@ -157,7 +157,9 @@ What it does:
 
 Check the status it prints at the end: on every node the same primary and
 epoch, every subscription enabled, every slot active, no errors. Safe to run
-again (e.g. a release's migrations). The names default to the
+again (e.g. a release's migrations). `scripts/cluster-setup.sh aws --status`
+only shows that status (e.g. after a database failover): it asks for the
+admin passwords and changes nothing. The names default to the
 infrastructure's dev environment; override them in the environment
 (`NODES`, `NODE_<NODE>_HOST`, `NODE_<NODE>_ADMIN_USER`,
 `NODE_<NODE>_REPL_HOST`, and the secret names as for `secrets-set.sh`).

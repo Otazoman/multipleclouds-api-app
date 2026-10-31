@@ -1,8 +1,8 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
-- 作成日: 2026-10-12（最終更新 2026-10-25）
+- 作成日: 2026-10-12（最終更新 2026-10-31）
 - 表の見方: 完了したものは ID（または番号）の前に ✅ を付け、内容を取り消し線にしている
-- ステータス（2026-10-25 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり（haBgp・HTTPS、singleTunnel・HTTP）となし（§8.5.6）のすべてで動作。DB のセットアップは `cluster-setup.sh` の 1 コマンド。構築の段階（`npm run build-stage`）、ビルドの結果のメール（3 クラウド）、コンテナへの接続をロードバランサーだけに制限（API-29）も確認済み。**再開時は §8 から**（§8.2 の 8b 以降）。
+- ステータス（2026-10-31 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり・なしの 3 構成で動作（§8.5.4〜8.5.6）。**DB の冗長構成（Aurora 2 台、Cloud SQL の HA、Azure の HA）でも、各 DB のフェイルオーバーの後にレプリケーションが続き、3 クラウドを一巡する計画的な切り替えも成功**（§8.5.7）。DB の設定は単体に戻し済み。**再開時は §8 から**。
 - 分担（2026-10-18 に確認）: クラウド間のデータの複製は PostgreSQL の論理レプリケーション（VPN 経由、5432／TLS）。アプリは書き込みをプライマリに集め、他ノードへの到達を待ち、変更履歴・冪等キー・プライマリの切り替えを受け持つ。HTTPS はクライアントからロードバランサーまでで、レプリケーションとは別。クラウドの中の DB の冗長化（フェイルオーバー）は各クラウドの機能で、アプリからは 1 ノードに見える。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
@@ -51,7 +51,7 @@
 | ✅ ~~API-06~~ | P2 | ~~DB の接続数（最大約 220 で `max_connections = 100` を超え得た）~~ | **完了**（§6） |
 | API-07 | P2 | 変更履歴の削除の定期実行（§4.3） | **実装済み（2026-10-17、未 deploy）: C. マネージドのジョブ**。アプリ: `src/prune.ts`（`node dist/prune.js`、`JOURNAL_RETENTION_DAYS`）、`cloudbuild.yaml`・`azure-pipelines.yml` でジョブのイメージを更新。cdktn: `apiContainerConfig.journalPrune`（既定 `false`。API のデプロイ後に `true`）で EventBridge Scheduler＋ECS、Cloud Scheduler＋Cloud Run ジョブ、Container Apps ジョブ。ローカルで別ノードから実行し、プライマリで削除され全ノードに反映されることを確認 |
 | ✅ ~~API-08~~ | P2 | ~~シークレットの管理方式~~ | **決定**（A'、§5）。実装は API-02 |
-| API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え（Azure 障害時に AWS / Google の VM から実行する手順を含む: §4.2）、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更、`docs/operations.md` のリリース手順 | 未着手 |
+| API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え（Azure 障害時に AWS / Google の VM から実行する手順を含む: §4.2）、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更、`docs/operations.md` のリリース手順 | 未着手。**2026-10-31: 計画的な切り替え（aws→azure→google→aws）を `cluster-setup.sh --primary` で確認済み**。残り: 強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時の手順 |
 | API-10 | P3 | フェーズ 3: MySQL 対応。**MySQL の構成で PostgreSQL と同じこと（どのノードもプライマリになれる双方向の複製、確認待ち、切り替え、変更履歴）ができるかの検討から**。まず3クラウドのマネージド MySQL で、レプリケーションの複製元を付け替えられるか（どのクラウドもプライマリになれるか）を PoC で確認。成り立つ場合のみ、DB 依存部分（確認待ち・切り替え・SQL の方言・DDL 生成）をアダプターに分離して実装 | 未着手 |
 | API-11 | P3 | 強制切り替えで受信量が少なかったノードの修復を、初期化（再シード）ではなく変更履歴から行えるようにする（現状は `journal-diff.sh` で一覧にするだけ） | 未着手 |
 | API-12 | P3 | 名前付きクエリの SQL を起動時または `npm run generate` 時に検証する（現状は実行するまで分からない） | 未着手 |
@@ -64,7 +64,7 @@
 | ✅ ~~API-21~~ | — | ~~整理（2026-10-17 完了）: `pg_subscription` の参照を現在のデータベースに限定（`replication-setup.sh`・`replication-status.sh`・`switchover.sh`。ローカルで再実行・計画的な切り替え・強制切り替えを確認）、`architecture.md`（英・日）にクラスタと単体の説明、cdktn の Container Apps の仮の `DB_URL` を削除、使わない RDS のロググループの設定をコメントアウト、FEAT-01 §10・FEAT-04 §7.3 の古い項目を完了・取り消しに~~ | **完了** |
 | ✅ ~~API-18~~ | P1 | ~~アプリ用のデータベース `appdb` がクラウドで作られない~~ | **実装済み（2026-10-17）: b 案**。`scripts/database-create.sh`（無ければ作成、全ノードの照合順序を比較し異なれば失敗。既定は組み込みロケール `C.UTF-8`、`DB_CREATE_OPTIONS` で変更可）。compose もスクリプトで作る形に変更。API-01 の最初に実行する |
 | ✅ ~~API-17~~ | P1 | ~~`docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる~~ | **完了（2026-10-17）**。`docs/operations.md` のパスワードの変更手順も更新 |
-| API-22 | P2 | 冗長構成の確認: API のコンテナを複数台（ECS のタスク、Cloud Run・Container Apps のインスタンス。API は状態を持たないのでアプリの変更は不要の想定）、DB の冗長化（**Aurora を 2 台以上**〔ライターとリーダー〕、**Cloud SQL の HA**〔REGIONAL〕、**Azure の HA**〔ゾーン冗長〕。接続先の名前は変わらないのでアプリの変更は不要の想定）で問題なく動くか。クラスタ構成では、クラウドの中で DB がフェイルオーバーした後も論理レプリケーションのスロットが引き継がれ、複製が続くか（クラウドごとに扱いが違う可能性があり未確認）。プライベート DNS なしのクラスタでは Azure の IP が変わるか | 未着手（2026-10-18 追加、2026-10-25 更新） |
+| API-22 | P2 | 冗長構成の確認: API のコンテナを複数台（ECS のタスク、Cloud Run・Container Apps のインスタンス。API は状態を持たないのでアプリの変更は不要の想定）、DB の冗長化（**Aurora を 2 台以上**〔ライターとリーダー〕、**Cloud SQL の HA**〔REGIONAL〕、**Azure の HA**〔ゾーン冗長〕。接続先の名前は変わらないのでアプリの変更は不要の想定）で問題なく動くか。クラスタ構成では、クラウドの中で DB がフェイルオーバーした後も論理レプリケーションのスロットが引き継がれ、複製が続くか（クラウドごとに扱いが違う可能性があり未確認）。プライベート DNS なしのクラスタでは Azure の IP が変わるか | **DB の冗長化は完了（2026-10-31、§8.5.7）**: Aurora・Cloud SQL はそのままフェイルオーバーの後もレプリケーションが続く。Azure はスロットの同期（`sync_replication_slots`・`hot_standby_feedback`、サブスクリプションの `failover = true`）で続く。Azure の IP はフェイルオーバーで変わる（プライベート DNS ありなら追従）。**残り**: API のコンテナの複数台 |
 | API-23 | P2 | API にフロントエンドからのみアクセスできるようにする仕組み（方式は未決定: API キー、署名付きヘッダー、ロードバランサー／WAF での制限、OIDC など） | 未着手（2026-10-18 追加）。方式の検討から。2026-10-25 の点検 a: 今は API に認証がなく、ロードバランサーまで誰でも届き書き込みもできる（本番では必須） |
 | API-24 | P2 | セキュリティ（2026-10-25 の点検 b）: dev のロードバランサーは HTTP で通信が暗号化されない。stg・prod は HTTPS（設定はある） | 未着手 |
 | API-25 | P2 | セキュリティ（点検 c）: WAF・レート制限がない（Azure の WAF の Application Gateway の設定は削除済み）。stg・prod で検討 | 未着手 |
@@ -204,9 +204,9 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 |---|---|---|---|
 | 6 | 変更履歴の削除ジョブが 3 クラウドで実際に動くか。一晩残さず、段階 3 の deploy の後に手で起動して確認する（下の「削除ジョブの確認の手順」）。成功するとログに `Deleted N journal rows older than 30 days on <primary> (epoch N)`（件数 0 でも成功）。あわせてアラートが鳴るか（わざとエラーを出す。方法は試すときに決める） | 課金（構築の間だけ） | API-07、API-20 |
 | 3 | マネージド DB の権限の残り: `pg_replication_origin_status`（強制切り替え）、`pg_terminate_backend`（ノードの削除）を管理者で使えるか | クラウドの DB への実行 | API-04 |
-| 9 | 運用手順のリハーサル: 計画的な切り替え（`cluster-setup.sh aws --primary google` でも可）、強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時に AWS / Google の VM から切り替える手順 | クラウドの DB への実行 | API-09 |
+| 9 | 運用手順のリハーサル: ~~計画的な切り替え~~ **完了（2026-10-31）**。残り: 強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時に AWS / Google の VM から切り替える手順 | クラウドの DB への実行 | API-09 |
 | 7 | 往復時間と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` の調整 | — | API-05、API-06 |
-| 8b | 冗長構成: API の複数台、Aurora を 2 台以上、Cloud SQL の HA、Azure の HA。DB のフェイルオーバーの後もレプリケーションが続くか | 課金（冗長構成） | API-22 |
+| 8b | 冗長構成: ~~DB の冗長化（Aurora 2 台、Cloud SQL の HA、Azure の HA）とフェイルオーバーの後のレプリケーション~~ **完了（2026-10-31、§8.5.7）**。残り: API のコンテナの複数台 | 課金 | API-22 |
 
 **削除ジョブの確認の手順（§8.2 の 6。一晩残すと約 20 ドルかかるため、手で起動する）**
 
@@ -351,6 +351,19 @@ aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/ecs/api
 | つまずき | (1) 段階 2 を `--azure-db-ip` なしで設定し、合成が止まった（想定どおりの停止。注意の表示を追加）。(2) `cluster-setup.sh` が AWS のシークレットを読めなかった（CLI のサインイン切れ。CLI のエラーを表示するよう修正）。(3) Azure の DB への管理者のログインが 1 回失敗（パスワードを明示的に入力して再実行で成功、原因は不明） |
 | DB のセットアップ | `NODE_AWS_HOST=<Aurora のエンドポイント> NODE_GOOGLE_HOST=<Cloud SQL の IP> NODE_AZURE_HOST=<Azure の IP> scripts/cluster-setup.sh aws` で成功 |
 | 動作確認 | 3 クラウドで `/healthz`（同じ版 `8313c5f`）と `/readyz`（200）。各クラウドで書き込み、3 クラウドから読む総当たりの 9 通りすべて成功。ビルドの結果のメールが AWS・Google・Azure とも届いた |
+
+### 8.5.7 2026-10-31 の DB の冗長構成の確認
+
+| 項目 | 内容 |
+|---|---|
+| 構成 | dev、`topology: cluster`、プライベート DNS あり、HTTP。DB を冗長に: Aurora 2 台（ライター・リーダー）、Cloud SQL `REGIONAL`、Azure `GP_Standard_D2ds_v5` の `ZoneRedundant`（Burstable は HA 不可） |
+| 事前の対策 | Azure は PostgreSQL 17 以降、`sync_replication_slots`・`hot_standby_feedback` があり、`failover` を有効にして作ったスロットだけが待機系に同期される（Microsoft のドキュメント）。cdktn の Azure のパラメータに 2 つを追加、アプリの `replication-setup.sh` はサブスクリプションを `failover = true` で作る（既存は切り替える）。どちらも冗長化していなくても害がないので常に有効 |
+| フェイルオーバー | `aws rds failover-db-cluster`、`gcloud sql instances failover`、`az postgres flexible-server restart --failover Forced` を 1 クラウドずつ。各回の後、6 本のサブスクリプションの時刻が今、スロットはすべて active、総当たりの 9 通りが成功。Azure の送り出しのスロットは `synced = t` で新しいプライマリに引き継がれた。受け取る側に接続のエラーが 1 回ずつ（自動で再接続、統計の累計） |
+| Azure の IP | フェイルオーバーで `10.2.32.5` に（これまでの構築ではいつも `.4`）。プライベート DNS ありなら名前が追従、なしなら記録し直しが必要 |
+| 計画的な切り替え | `cluster-setup.sh aws --primary azure` → `google` → `aws`（epoch 2→3→4）。毎回、書き込みが新しいプライマリで行われ、他の 2 つに届いた（フェイルオーバーで引き継がれたスロットが実際にデータを運べることも確認）。同じ切り替えの繰り返しは何もしない |
+| つまずき | 段階 3 をビルドの前に deploy し、仮のイメージが `/readyz` に落ちて AWS のデプロイが 10 分を超え、ビルドが失敗扱い（デプロイは 30 秒後に完了）。→ `build-stage` の段階 3 で注意を表示、`buildspec.yml` の待ちを 20 分にしロールバックを検出。Cloud SQL への管理者のログインが 1 回失敗（再実行で成功。DB 側の一時的なものと判断） |
+| 改善 | `cluster-setup.sh --status`（状態だけを表示）、`buildspec.yml`（待ち 20 分、ロールバックで失敗に） |
+| 終了時 | DB の設定を単体に戻した（Aurora 1 台、Cloud SQL `ZONAL`、Azure `B_Standard_B1ms`）。ユーザーが destroy |
 
 ### 8.6 ユーザーの回答待ち
 
