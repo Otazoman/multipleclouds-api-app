@@ -1,8 +1,8 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
-- 作成日: 2026-10-12（最終更新 2026-10-31）
+- 作成日: 2026-10-12（最終更新 2026-11-01）
 - 表の見方: 完了したものは ID（または番号）の前に ✅ を付け、内容を取り消し線にしている
-- ステータス（2026-10-31 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり・なしの 3 構成で動作（§8.5.4〜8.5.6）。**DB の冗長構成（Aurora 2 台、Cloud SQL の HA、Azure の HA）でも、各 DB のフェイルオーバーの後にレプリケーションが続き、3 クラウドを一巡する計画的な切り替えも成功**（§8.5.7）。DB の設定は単体に戻し済み。**再開時は §8 から**。
+- ステータス（2026-10-31 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり・なしの 3 構成で動作（§8.5.4〜8.5.6）。**DB の冗長構成（Aurora 2 台、Cloud SQL の HA、Azure の HA）でも、各 DB のフェイルオーバーの後にレプリケーションが続き、3 クラウドを一巡する計画的な切り替えも成功**（§8.5.7）。DB の設定は単体に戻し済み。**2026-11-01: 3 クラウドの HTTPS の証明書を自動発行・自動更新にし、NS の登録も自動化（API-24、cdktn）**。**再開時は §8 から**。
 - 分担（2026-10-18 に確認）: クラウド間のデータの複製は PostgreSQL の論理レプリケーション（VPN 経由、5432／TLS）。アプリは書き込みをプライマリに集め、他ノードへの到達を待ち、変更履歴・冪等キー・プライマリの切り替えを受け持つ。HTTPS はクライアントからロードバランサーまでで、レプリケーションとは別。クラウドの中の DB の冗長化（フェイルオーバー）は各クラウドの機能で、アプリからは 1 ノードに見える。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
@@ -66,8 +66,8 @@
 | ✅ ~~API-17~~ | P1 | ~~`docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる~~ | **完了（2026-10-17）**。`docs/operations.md` のパスワードの変更手順も更新 |
 | API-22 | P2 | 冗長構成の確認: API のコンテナを複数台（ECS のタスク、Cloud Run・Container Apps のインスタンス。API は状態を持たないのでアプリの変更は不要の想定）、DB の冗長化（**Aurora を 2 台以上**〔ライターとリーダー〕、**Cloud SQL の HA**〔REGIONAL〕、**Azure の HA**〔ゾーン冗長〕。接続先の名前は変わらないのでアプリの変更は不要の想定）で問題なく動くか。クラスタ構成では、クラウドの中で DB がフェイルオーバーした後も論理レプリケーションのスロットが引き継がれ、複製が続くか（クラウドごとに扱いが違う可能性があり未確認）。プライベート DNS なしのクラスタでは Azure の IP が変わるか | **DB の冗長化は完了（2026-10-31、§8.5.7）**: Aurora・Cloud SQL はそのままフェイルオーバーの後もレプリケーションが続く。Azure はスロットの同期（`sync_replication_slots`・`hot_standby_feedback`、サブスクリプションの `failover = true`）で続く。Azure の IP はフェイルオーバーで変わる（プライベート DNS ありなら追従）。**残り**: API のコンテナの複数台 |
 | API-23 | P2 | API にフロントエンドからのみアクセスできるようにする仕組み（方式は未決定: API キー、署名付きヘッダー、ロードバランサー／WAF での制限、OIDC など） | 未着手（2026-10-18 追加）。方式の検討から。2026-10-25 の点検 a: 今は API に認証がなく、ロードバランサーまで誰でも届き書き込みもできる（本番では必須）。Azure の入り口・証明書の検討は §3.1 |
-| API-24 | P2 | セキュリティ（2026-10-25 の点検 b）: dev のロードバランサーは HTTP で通信が暗号化されない。stg・prod は HTTPS（設定はある）。**証明書（2026-10-31 に確認）**: AWS は ACM（DNS で検証、正式）。Google（`sslcerts/openssl/server.crt`）と Azure（`sslcerts/pfx/…pfx`、中身は未確認）は 2026-10-17 に作り直した**自己署名**で、ブラウザや `curl` が警告する（`config/google/cloudloadbalancing.ts` の `managedSsl` は手元のファイルをアップロードする設定で、Google が発行するものではない）。本番の前に正式な証明書へ: 案は (1) Let's Encrypt の証明書をファイルで置く（約 90 日ごとに更新）、(2) Google は Certificate Manager（DNS で検証、Google が発行・更新）、(3) Azure は Key Vault の証明書を Application Gateway が参照（自動更新は発行元しだい）。(2)(3) は cdktn の変更が必要。HTTPS にするには公開 DNS（`dns: true`）、HTTPS のロードバランサーの `build`、親ゾーンへの NS の登録も必要 | 未着手。Azure の入り口・証明書の検討は §3.1 |
-| API-25 | P2 | セキュリティ（点検 c）: WAF・レート制限がない（Azure の WAF の Application Gateway の設定は削除済み）。stg・prod で検討 | 未着手。Azure の入り口・証明書の検討は §3.1 |
+| ✅ ~~API-24~~ | P2 | ~~セキュリティ（2026-10-25 の点検 b）: dev のロードバランサーは HTTP で通信が暗号化されない。Google と Azure の証明書は自己署名で、ブラウザや `curl` が警告する。本番の前に正式な証明書へ~~ | **完了（2026-11-01、cdktn）**: 3 クラウドとも、構築時の `cdktn deploy` 1 回で正式な証明書が入り、以後は自動で更新される。AWS は ACM（`AWS_MANAGED`、従来どおり）。Google は Certificate Manager のリージョンの Google マネージド証明書（`managedSsl.mode: "CERTIFICATE_MANAGER"`、DNS 認証。dev で HTTPS を確認）。Azure は Let's Encrypt（`sslCertificates[].mode: "LETS_ENCRYPT"`）: Container Apps のジョブ（毎日、lego v4.35.2、DNS-01）が Key Vault に発行・更新し、Application Gateway がバージョンなしで参照（4 時間ごとに取得）。deploy の中でジョブを 1 回起動して待つ。Key Vault は `dbs` がなくても作られる。dev で発行と HTTPS を確認（発行元 Let's Encrypt、期限 90 日）。期限の 30 日前の自動更新は未確認（初回は 2026-12-31 ごろ）。同じ名前の証明書は 7 日に 5 枚まで（作り直すたびに 1 枚）。各クラウドの公開ゾーンの NS は、別アカウントの Route 53 の親ゾーンに cdktn が書き込む（`state/<env>/parent-dns.json`、IAM ロール `cdktn-ns-delegation`）。独自証明書（ファイル）も `IMPORT` で選べる（AWS・Google・Azure で同じ作り）。経緯は §3.1 |
+| API-25 | P2 | セキュリティ（点検 c）: WAF・レート制限がない（Azure の WAF の Application Gateway の設定は削除済み）。stg・prod で検討 | 未着手。Azure の入り口の検討（Front Door を保留した理由）は §3.1 |
 | API-26 | P2 | セキュリティ（点検 d）: DB の管理者パスワードが公開のサンプルの値（dev は了承済み）。stg・prod では必ず変える。Terraform の state にも残るので state は作業端末だけに置く | 未着手 |
 | API-27 | P3 | セキュリティ（点検 e）: API から DB への TLS が `require`（暗号化のみで証明書を検証しない）。より厳密には `verify-full` と CA の配布 | 未着手 |
 | API-28 | P3 | セキュリティ（点検 f）: AWS の作業用 VM の SG が 3 クラウドと Cloud SQL の範囲から全ポートを受け付ける。SSH など必要なポートだけに絞る | 未着手 |
@@ -110,7 +110,14 @@ Azure の HTTPS の証明書を自動更新し、コンテナに Front Door 以�
 | WAF・ボット対策 | 管理された規則あり | 自作のルールのみ（強化には Premium か `WAF_v2`） |
 | 構成の単純さ・遅延 | 1 段 | 2 段（証明書・ヘルスチェック・ルールを 2 か所で管理） |
 
-**まとめ**: どの案でも API でのヘッダー `X-Azure-FDID` の確認（API-23 で作る。Front Door の ID は cdktn が環境変数で渡す）が必須。小さく始めて変更を減らすなら案 3、拡張や WAF の強化を見込むなら案 2（地域を 1 つ増やすと費用の差は縮まるか逆転）、費用を最優先なら案 1（IP の自動の書き直しと変化の検知を一緒に作る）。将来の拡張として、Front Door を 3 クラウド共通の入り口にする（AWS・Google のロードバランサーも転送先にし、ヘルスチェックで止まったクラウドを外す）案もあり、API-23・HTTPS の設計と一緒に検討する価値がある。
+**まとめ（2026-10-31 時点）**: どの案でも API でのヘッダー `X-Azure-FDID` の確認（API-23 で作る。Front Door の ID は cdktn が環境変数で渡す）が必須。小さく始めて変更を減らすなら案 3、拡張や WAF の強化を見込むなら案 2（地域を 1 つ増やすと費用の差は縮まるか逆転）、費用を最優先なら案 1（IP の自動の書き直しと変化の検知を一緒に作る）。将来の拡張として、Front Door を 3 クラウド共通の入り口にする（AWS・Google のロードバランサーも転送先にし、ヘルスチェックで止まったクラウドを外す）案もあり、API-23・HTTPS の設計と一緒に検討する価値がある。
+
+**結論（2026-11-01）: Front Door は保留し、Application Gateway のまま Let's Encrypt を自動更新**
+
+- 案 3（Front Door → Application Gateway）は、Front Door が転送先の自己署名証明書を受け付けない（公式）ため、Application Gateway の証明書の問題が残る。案 1（Standard → 外部の Container Apps）は、Container Apps の IP 制限がサービスタグを使えず、外部のワークロード プロファイルの環境は NSG で受信を絞れない（公式）。
+- 案 2（Premium → Private Link → 内部の Container Apps）は、Private Link 経由で Container Apps に届く送信元 IP が公式に記載されておらず、「Application Gateway だけ許可」と同じ IP 制限（API-29 の方針）を組めるか確定できなかった。ヘッダーの確認だけ（API-23）に頼る案や、制限なしの案は採らない（利用者の判断）。
+- そこで、今の Application Gateway（受信の制限は API-29 のまま）に Let's Encrypt の証明書を自動で入れる方式にした（API-24）。Front Door は、WAF の強化（API-25）やエッジ配信が必要になったときに、送信元 IP の扱いを確かめてから再検討する。Premium の基本料金は時間単位の請求（公式）。
+- Key Vault Acmebot は、証明書の発行に管理画面か認証付きの API の操作が要り、毎回 destroy する運用で手順が増えるため採らなかった。Terraform の ACME プロバイダーは、更新に `cdktn deploy` の再実行が要るため採らなかった。
 
 ## 4. スクリプトの実行場所（API-01、API-07）
 
