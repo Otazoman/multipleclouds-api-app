@@ -263,7 +263,8 @@ mutation {
 ```
 
 Keys are kept as long as the write journal keeps the write
-(`scripts/journal-prune.sh`, 30 days by default).
+(the daily pruning job, 30 days by default; `scripts/journal-prune.sh` by
+hand).
 
 ## Endpoints
 

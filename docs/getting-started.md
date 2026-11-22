@@ -349,8 +349,10 @@ reach or log in to its database, or that a migration is missing there (the
 API log names it): check `DB_*` and that `scripts/migrate.sh` and
 `scripts/api-role-setup.sh` have run on that node.
 
-After the first deployment, schedule `scripts/journal-prune.sh` (e.g.
-daily) on the scripts host: see [operations.md](operations.md#write-journal).
+Old write-journal rows are deleted daily by the job the infrastructure
+repository creates (`apiContainerConfig.journalPrune`, build stage 3); there
+is no need to schedule `scripts/journal-prune.sh` on the scripts host. To
+check the runs or prune by hand, see [operations.md](operations.md#write-journal).
 
 ## Next steps
 

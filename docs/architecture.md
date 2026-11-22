@@ -150,8 +150,9 @@ replicated, it moves with the data during a switchover.
 - **Recovery.** `scripts/journal-diff.sh` lists the writes one node has and
   another does not, with their arguments and results, e.g. an old
   primary's unconfirmed writes before it is reset.
-- **Retention.** `scripts/journal-prune.sh` deletes old rows on the primary
-  (30 days by default), which is also how long keys work.
+- **Retention.** A daily job (`src/prune.ts`, scheduled on each cloud)
+  deletes old rows on the primary (30 days by default; `scripts/journal-prune.sh`
+  by hand), which is also how long keys work.
 
 ### Switchover
 

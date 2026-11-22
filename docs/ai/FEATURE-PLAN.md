@@ -1,8 +1,8 @@
 # FEATURE-PLAN: multicloud_api_apps の残課題
 
-- 作成日: 2026-10-12（最終更新 2026-11-01）
+- 作成日: 2026-10-12（最終更新 2026-11-22）
 - 表の見方: 完了したものは ID（または番号）の前に ✅ を付け、内容を取り消し線にしている
-- ステータス（2026-10-31 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり・なしの 3 構成で動作（§8.5.4〜8.5.6）。**DB の冗長構成（Aurora 2 台、Cloud SQL の HA、Azure の HA）でも、各 DB のフェイルオーバーの後にレプリケーションが続き、3 クラウドを一巡する計画的な切り替えも成功**（§8.5.7）。DB の設定は単体に戻し済み。**2026-11-01: 3 クラウドの HTTPS の証明書を自動発行・自動更新にし、NS の登録も自動化（API-24、cdktn）**。**再開時は §8 から**。
+- ステータス（2026-10-31 終了時）: dev で 3 クラウドのクラスタ構成が、プライベート DNS あり・なしの 3 構成で動作（§8.5.4〜8.5.6）。**DB の冗長構成（Aurora 2 台、Cloud SQL の HA、Azure の HA）でも、各 DB のフェイルオーバーの後にレプリケーションが続き、3 クラウドを一巡する計画的な切り替えも成功**（§8.5.7）。DB の設定は単体に戻し済み。**2026-11-01: 3 クラウドの HTTPS の証明書を自動発行・自動更新にし、NS の登録も自動化（API-24、cdktn）**。**再開時は §8 から**。 **2026-11-22: 3 クラウドのクラスタ（singleTunnel・プライベート DNS なし）を再構築し、削除ジョブ（3 クラウド）・マネージド DB の権限（API-04）・Azure の `AzureDiagnostics` の保存期間を確認（§8.5.8）**。
 - 分担（2026-10-18 に確認）: クラウド間のデータの複製は PostgreSQL の論理レプリケーション（VPN 経由、5432／TLS）。アプリは書き込みをプライマリに集め、他ノードへの到達を待ち、変更履歴・冪等キー・プライマリの切り替えを受け持つ。HTTPS はクライアントからロードバランサーまでで、レプリケーションとは別。クラウドの中の DB の冗長化（フェイルオーバー）は各クラウドの機能で、アプリからは 1 ノードに見える。
 - 関連: インフラ側の設計は `cdktn_multicloud_backend/app/docs/ai/feat01_active_active_design.md`（FEAT-01）と `feat04_environments_design.md`（FEAT-04）。本ファイルはアプリ側の計画で、FEAT-01 の §7（シークレット）・§9 #5（API コンテナの設定）・§12（CI/CD 連携）と対応する。
 - 運用手順（人が使うもの）は `docs/operations.md`（英・日）。リリースの手順は同ファイルの「Releases / リリース」。
@@ -46,10 +46,10 @@
 | ✅ ~~API-01~~ | P1 | ~~クラウドでの初回 DB セットアップ（`database-create.sh` → `migrate.sh` → `api-role-setup.sh` → `replication-setup.sh` → `switchover.sh <最初のプライマリ>`）。実行場所は §4~~ | 未着手（dev 環境の構築待ち）。**完了（2026-10-25）**: クラスタは `scripts/cluster-setup.sh`、単体は `scripts/node-setup.sh` の 1 コマンドで 3 クラウドとも成功 |
 | ✅ ~~API-02~~ | P1 | ~~cdktn: 各 API コンテナの環境変数とシークレット参照（§5.2）~~ | **実装済み（2026-10-17、未 deploy）**: cdktn の `config/apicontainer.ts` ほか（FEAT-01 §9 #5）。アプリの `buildspec.yml` は `TASK_FAMILY` の最新リビジョンを元にする。deploy 時に確認すること: Container Apps がプライベートエンドポイントだけの Key Vault のシークレットを読めるか、Cloud Run の startup probe の時間。**完了（2026-10-25、3 クラウドで deploy・動作確認）** |
 | ✅ ~~API-03~~ | P1 | ~~クラウドでの確認: 各コンテナ（ECS / Cloud Run / Container Apps）から他クラウドの DB（5432）へ接続できるか。設定上は可能（AWS の SG、Google の Cloud Router の広告と PSA のルート交換、Azure の NSG の `VirtualNetwork` タグ）だが、実際の経路は未確認~~ | 未着手。**2026-10-25 に確認済み**: Google の API（Cloud Run）から VPN 経由で AWS の DB に書き込めた。DB 同士の 6 方向の接続も確認（AWS の DB の SG の送信が 80/443 だけだったのを修正） |
-| API-04 | P1 | マネージド DB での権限確認: 管理者ユーザーで `CREATE DATABASE` と組み込みロケール（`LOCALE_PROVIDER builtin`）を使えるか（Aurora・Cloud SQL・Azure。使えなければ `DB_CREATE_OPTIONS` で3クラウド共通の照合順序を指定）、管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する） | 未着手。**2026-10-25 の分かったこと**: 3 クラウドとも `CREATE DATABASE`（組み込みロケール）と `replication-setup.sh` は管理者で実行できた（Aurora は `rds_replication` の付与も可）。Cloud SQL では管理者がサブスクリプションの接続文字列を読めないため、`replication-setup.sh` は毎回 `update connection` になる（サブスクリプションが一瞬再接続するだけで問題なし）。`pg_replication_origin_status`・`pg_terminate_backend` は未確認（切り替えのリハーサルで確認） |
-| API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整。API-06 の想定（書き込み毎秒 700〜800 件が上限の目安）の確認 | 未着手 |
+| ✅ ~~API-04~~ | P1 | ~~マネージド DB での権限確認: 管理者ユーザーで `CREATE DATABASE` と組み込みロケール（`LOCALE_PROVIDER builtin`）を使えるか（Aurora・Cloud SQL・Azure。使えなければ `DB_CREATE_OPTIONS` で3クラウド共通の照合順序を指定）、管理者ユーザーで `pg_replication_origin_status` を読めるか（強制切り替えで使用。読めなければ `--allow-behind` が必要）、`pg_terminate_backend` を実行できるか（ノード削除の手順）、`subconninfo` を読めるか（読めなければ `replication-setup.sh` が毎回接続文字列を更新し、サブスクリプションが一瞬再起動する）~~ | **完了（2026-11-22、§8.5.8）**: 3 クラウドとも、管理者で `pg_replication_origin_status` を読める（強制切り替えに `--allow-behind` は不要）。管理者はスーパーユーザーではないが `pg_signal_backend` のメンバーなので、`pg_terminate_backend` で `app_repl` の接続を終了できる（ノードの削除の手順）。**2026-10-25 の分かったこと**: 3 クラウドとも `CREATE DATABASE`（組み込みロケール）と `replication-setup.sh` は管理者で実行できた（Aurora は `rds_replication` の付与も可）。Cloud SQL では管理者がサブスクリプションの接続文字列を読めないため、`replication-setup.sh` は毎回 `update connection` になる（サブスクリプションが一瞬再接続するだけで問題なし）。`pg_replication_origin_status`・`pg_terminate_backend` は未確認（切り替えのリハーサルで確認） |
+| API-05 | P2 | クラウド間の往復時間（RTT）と書き込み時間の実測。PoC では往復 40ms で約 85ms（別クラウドの API から）。`WRITE_ACK_TIMEOUT_MS` の調整。API-06 の想定（書き込み毎秒 700〜800 件が上限の目安）の確認 | **実測済み（2026-11-22、§8.5.8）**: クラウド間の往復（AWS の VM から Google・Azure の DB へ `SELECT 1`）は約 5〜6ms（3 クラウドとも東京のリージョン。PoC の 40ms より短い）。書き込み（接続・TLS を除いた応答までの時間の中央値 − healthz）は aws から 19ms、google から 31ms、azure から 38ms（プライマリ aws）。`WRITE_ACK_TIMEOUT_MS` の既定 3000ms に十分な余裕があり調整は不要。**残り**: 同時書き込みの実測（API-06 の毎秒 700〜800 件の想定の確認） |
 | ✅ ~~API-06~~ | P2 | ~~DB の接続数（最大約 220 で `max_connections = 100` を超え得た）~~ | **完了**（§6） |
-| API-07 | P2 | 変更履歴の削除の定期実行（§4.3） | **実装済み（2026-10-17、未 deploy）: C. マネージドのジョブ**。アプリ: `src/prune.ts`（`node dist/prune.js`、`JOURNAL_RETENTION_DAYS`）、`cloudbuild.yaml`・`azure-pipelines.yml` でジョブのイメージを更新。cdktn: `apiContainerConfig.journalPrune`（既定 `false`。API のデプロイ後に `true`）で EventBridge Scheduler＋ECS、Cloud Scheduler＋Cloud Run ジョブ、Container Apps ジョブ。ローカルで別ノードから実行し、プライマリで削除され全ノードに反映されることを確認 |
+| ✅ ~~API-07~~ | P2 | 変更履歴の削除の定期実行（§4.3） | **実装済み（2026-10-17、未 deploy）: C. マネージドのジョブ**。アプリ: `src/prune.ts`（`node dist/prune.js`、`JOURNAL_RETENTION_DAYS`）、`cloudbuild.yaml`・`azure-pipelines.yml` でジョブのイメージを更新。cdktn: `apiContainerConfig.journalPrune`（既定 `false`。API のデプロイ後に `true`）で EventBridge Scheduler＋ECS、Cloud Scheduler＋Cloud Run ジョブ、Container Apps ジョブ。ローカルで別ノードから実行し、プライマリで削除され全ノードに反映されることを確認。**完了（2026-11-22、§8.5.8）**: 3 クラウドで段階 3 の deploy の後に手で起動し、プライマリで実行された（`Deleted 0 journal rows older than 30 days on aws (epoch 1)`） |
 | ✅ ~~API-08~~ | P2 | ~~シークレットの管理方式~~ | **決定**（A'、§5）。実装は API-02 |
 | API-09 | P2 | 運用手順のクラウドでのリハーサル: 計画的な切り替え、強制切り替え（Azure 障害時に AWS / Google の VM から実行する手順を含む: §4.2）、旧プライマリの初期化と復帰、レプリケーション用パスワードの変更、`docs/operations.md` のリリース手順 | 未着手。**2026-10-31: 計画的な切り替え（aws→azure→google→aws）を `cluster-setup.sh --primary` で確認済み**。残り: 強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時の手順 |
 | API-10 | P3 | フェーズ 3: MySQL 対応。**MySQL の構成で PostgreSQL と同じこと（どのノードもプライマリになれる双方向の複製、確認待ち、切り替え、変更履歴）ができるかの検討から**。まず3クラウドのマネージド MySQL で、レプリケーションの複製元を付け替えられるか（どのクラウドもプライマリになれるか）を PoC で確認。成り立つ場合のみ、DB 依存部分（確認待ち・切り替え・SQL の方言・DDL 生成）をアダプターに分離して実装 | 未着手 |
@@ -60,7 +60,7 @@
 | ✅ ~~API-15~~ | — | ~~ブランチ運用への移行（`dev`・`staging`・`prod` の作成、cdktn の `cicdTrigger.branches`、ブランチ保護、既定のブランチ、ドキュメント）~~ | **完了**（2026-10-17。cdktn のトリガーは次の構築時に反映: §7） |
 | ✅ ~~API-16~~ | — | ~~リリースを安全にする改善（ビルド時のテスト、版の確認、DB の更新漏れでトラフィックを切り替えない readiness）~~ | **完了**（2026-10-17、§1） |
 | ✅ ~~API-19~~ | P1 | ~~1・2・3クラウドのどの構成でも API が動くようにする（VPN・DNS なしの単体クラウドを含む）~~ | **実装済み（2026-10-17）**: cdktn の `topology`、`DB_HOST` は自クラウドの DB の元の接続先（Aurora のエンドポイント、Cloud SQL のプライベート IP、Azure の FQDN）、`DB_<NODE>_HOST` はプライベート DNS 名。アプリ: `replication-setup.sh` は1ノードなら何もせず正常終了、`nodes.env.sample` の `NODES` は環境変数を優先、getting-started に構成の説明。ローカルで1ノード・2ノードの動作を確認。deploy 時に確認すること: Container Apps から Azure の DB の FQDN を解決できるか。**完了**: 単体（2026-10-18）とクラスタ（2026-10-25、プライベート DNS あり）で確認。プライベート DNS なしのクラスタにも対応（2026-10-25、cdktn、確認はこれから） |
-| API-20 | P2 | 監視と通知 | **一部実装（2026-10-18、cdktn、未 deploy）**: 3 クラウドで API のエラーログ（`failed`）、削除ジョブの失敗、ロードバランサーの 5xx（作られている HTTP / HTTPS のほうだけ）。通知先は `.env.<env>` の `ALERT_EMAILS`（`config/notifications.ts`）。手順はインフラの operations の「アラート」とアプリの operations の「ログとアラート」。**残り**: レプリケーションの遅延・停止とスロットの WAL の蓄積（クラスタにしてから）。deploy 時に確認すること: Azure の Container Apps ジョブのログが `ContainerAppConsoleLogs` に入るか、Google のロードバランサーの 5xx の指標名、AWS の SNS の確認メール |
+| API-20 | P2 | 監視と通知 | **一部実装（2026-10-18、cdktn、未 deploy）**: 3 クラウドで API のエラーログ（`failed`）、削除ジョブの失敗、ロードバランサーの 5xx（作られている HTTP / HTTPS のほうだけ）。通知先は `.env.<env>` の `ALERT_EMAILS`（`config/notifications.ts`）。手順はインフラの operations の「アラート」とアプリの operations の「ログとアラート」。**2026-11-22: アラートが鳴ることを確認**（AWS の `api-errors`・`journal-prune-failed`、Google の `journal-prune-failed`、Azure の `api-errors`。メールまで届く）。Azure の `api-errors` は、段階 1〜3 の仮のイメージ（nginx）がスキャナーの `/.env` などへのアクセスで出す `open() … failed` にも一致して鳴る（誤報。条件をアプリのメッセージに絞るか、API のデプロイまでアラートを作らないか、要検討）。**残り**: レプリケーションの遅延・停止とスロットの WAL の蓄積（クラスタにしてから）。deploy 時に確認すること: ~~Azure の Container Apps ジョブのログが `ContainerAppConsoleLogs` に入るか~~（2026-11-22 に確認。`has` は空白を含む文字列でも一致、ジョブ名は `JobName` 列）、Google のロードバランサーの 5xx の指標名、AWS の SNS の確認メール |
 | ✅ ~~API-21~~ | — | ~~整理（2026-10-17 完了）: `pg_subscription` の参照を現在のデータベースに限定（`replication-setup.sh`・`replication-status.sh`・`switchover.sh`。ローカルで再実行・計画的な切り替え・強制切り替えを確認）、`architecture.md`（英・日）にクラスタと単体の説明、cdktn の Container Apps の仮の `DB_URL` を削除、使わない RDS のロググループの設定をコメントアウト、FEAT-01 §10・FEAT-04 §7.3 の古い項目を完了・取り消しに~~ | **完了** |
 | ✅ ~~API-18~~ | P1 | ~~アプリ用のデータベース `appdb` がクラウドで作られない~~ | **実装済み（2026-10-17）: b 案**。`scripts/database-create.sh`（無ければ作成、全ノードの照合順序を比較し異なれば失敗。既定は組み込みロケール `C.UTF-8`、`DB_CREATE_OPTIONS` で変更可）。compose もスクリプトで作る形に変更。API-01 の最初に実行する |
 | ✅ ~~API-17~~ | P1 | ~~`docs/getting-started.md`（英・日）のシークレットの手順を A' に合わせる~~ | **完了（2026-10-17）**。`docs/operations.md` のパスワードの変更手順も更新 |
@@ -215,8 +215,8 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 - **できていること**: dev で 3 クラウドのクラスタ（論理レプリケーション）が、プライベート DNS あり（haBgp・HTTPS、singleTunnel・HTTP）となしの 3 構成で動作。構築は手順書どおりに一通り通る（§8.5.4〜8.5.6）。
 - **クラウド**: 最後の構築（§8.5.6）の後、ユーザーが destroy（再開時に残りがないか確認。Google のサブネットは 1〜2 時間後の再実行が必要なことがある）。
-- **未マージ**: アプリの PR #7（`cluster-setup.sh` の CLI のエラー表示、本ファイル）。destroy の後なら、マージしてもビルドは動かない。
-- **次の候補**: §8.2 の「次に dev で確認」の上から。どれも課金を伴う構築が必要なので、まとめて 1 回の構築で確認するのがよい。
+- ~~**未マージ**: アプリの PR #7~~ **マージ済み**（`dev` の `03e3791`。2026-11-22 の構築でこのコミットをデプロイ）。
+- **次の進め方（2026-11-01 に決定）**: (1) **API-23（API の認証）の方式の検討**（課金なし。API-25 の WAF・Azure の入り口の再検討にも影響）→ (2) §8.2 の「次に dev で確認」を 1 回の構築でまとめて確認（3 クラウドを同時に HTTPS にしたクラスタ構成の確認を追加。証明書と NS の登録は自動）→ (3) 事務（PR #7 のマージ、本節と §8.1 の更新。Azure の証明書の自動更新の初回は 2026-12-31 ごろ）→ (4) 改善（API-10〜13、§8.2 の 14）。
 
 **構築の手順（毎回同じ）**: cdktn の `docs/operations.md`「環境を構築する」の手順 1〜8（プライベート DNS なしは同じページの「プライベート DNS の無いクラスタ」）。アプリ側は `docs/getting-started.md` の 2〜3 章。
 
@@ -248,10 +248,10 @@ GitHub 上の確認（CI のチェック）はない。テストは各クラウ�
 
 | # | 作業 | 承認・判断 | 関連 |
 |---|---|---|---|
-| 6 | 変更履歴の削除ジョブが 3 クラウドで実際に動くか。一晩残さず、段階 3 の deploy の後に手で起動して確認する（下の「削除ジョブの確認の手順」）。成功するとログに `Deleted N journal rows older than 30 days on <primary> (epoch N)`（件数 0 でも成功）。あわせてアラートが鳴るか（わざとエラーを出す。方法は試すときに決める） | 課金（構築の間だけ） | API-07、API-20 |
-| 3 | マネージド DB の権限の残り: `pg_replication_origin_status`（強制切り替え）、`pg_terminate_backend`（ノードの削除）を管理者で使えるか | クラウドの DB への実行 | API-04 |
+| 6 | **完了（2026-11-22、§8.5.8）: 削除ジョブ（3 クラウド）とアラート（AWS・Google は `journal-prune-failed` が鳴った。Azure は同じ仕組みの `api-errors` が鳴ったことで確認済みとした）。** 変更履歴の削除ジョブが 3 クラウドで実際に動くか。一晩残さず、段階 3 の deploy の後に手で起動して確認する（下の「削除ジョブの確認の手順」）。成功するとログに `Deleted N journal rows older than 30 days on <primary> (epoch N)`（件数 0 でも成功）。あわせてアラートが鳴るか（わざとエラーを出す。方法は試すときに決める） | 課金（構築の間だけ） | API-07、API-20 |
+| ~~3~~ | ~~マネージド DB の権限の残り: `pg_replication_origin_status`（強制切り替え）、`pg_terminate_backend`（ノードの削除）を管理者で使えるか~~ **完了（2026-11-22、§8.5.8）** | クラウドの DB への実行 | API-04 |
 | 9 | 運用手順のリハーサル: ~~計画的な切り替え~~ **完了（2026-10-31）**。残り: 強制切り替え、旧プライマリの復帰、パスワードの変更、Azure 障害時に AWS / Google の VM から切り替える手順 | クラウドの DB への実行 | API-09 |
-| 7 | 往復時間と書き込み時間、同時書き込みの実測。`WRITE_ACK_TIMEOUT_MS` の調整 | — | API-05、API-06 |
+| 7 | 往復時間と書き込み時間、同時書き込みの実測。**2026-11-22: 往復時間と書き込み時間は実測済み（API-05）。残り: 同時書き込み。**`WRITE_ACK_TIMEOUT_MS` の調整 | — | API-05、API-06 |
 | 8b | 冗長構成: ~~DB の冗長化（Aurora 2 台、Cloud SQL の HA、Azure の HA）とフェイルオーバーの後のレプリケーション~~ **完了（2026-10-31、§8.5.7）**。残り: API のコンテナの複数台 | 課金 | API-22 |
 
 **削除ジョブの確認の手順（§8.2 の 6。一晩残すと約 20 ドルかかるため、手で起動する）**
@@ -275,6 +275,8 @@ aws scheduler update-schedule --region ap-northeast-1 --cli-input-json file:///t
 aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/ecs/api-service \
   --filter-pattern '"journal rows"' --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[].message' --output text
 ```
+
+**アラートを試すとき（2026-11-22）**: Google は `gcloud run jobs execute multicloud-google-journal-prune --region=asia-northeast1 --update-env-vars=JOURNAL_RETENTION_DAYS=invalid`（その実行だけ値を上書き、`Journal pruning failed:` が出る）。AWS はロググループ `/aws/ecs/api-service` に `aws logs put-log-events` で `Journal pruning failed: alert test` を 1 行書く（`api-errors` も鳴る）。**Azure の `az containerapp job start --image --env-vars` は、その実行のコンテナの定義をまるごと置き換える**（コマンドと他の環境変数が消え、イメージの既定の API が起動して `CLOUD_ID is required` で止まる。`prune.js` を通らないのでアラートは鳴らない）。Azure で試すなら、ジョブの定義（コマンド、すべての環境変数とシークレットの参照）を読み出して 1 つだけ差し替える
 
 **stg・prod の前に**
 
@@ -300,8 +302,9 @@ aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/ecs/api
 |---|---|---|
 | Azure | Container Apps から、プライベートエンドポイントだけの Key Vault のシークレットを読めるか。Container Apps の環境から Azure の DB の FQDN を解決できるか | ✅ ~~確認済み（2026-10-18）~~ |
 | Google | Cloud Run の startup probe の待ち時間（最大 2 分）で足りるか | ✅ ~~確認済み（段階 3 で `/readyz` が 200）~~ |
-| Google | `roles/run.invoker` で Cloud Run ジョブを実行できるか（削除ジョブ） | 未確認（§8.2 の 6） |
-| AWS | EventBridge Scheduler が、リビジョンなしのタスク定義 ARN で最新のリビジョンを実行するか（削除ジョブ） | 未確認（§8.2 の 6） |
+| Google | `roles/run.invoker` で Cloud Run ジョブを実行できるか（削除ジョブ） | ✅ ~~確認済み（2026-11-22、Cloud Scheduler のサービスアカウントで起動）~~ |
+| AWS | EventBridge Scheduler が、リビジョンなしのタスク定義 ARN で最新のリビジョンを実行するか（削除ジョブ） | ✅ ~~確認済み（2026-11-22、CI/CD がデプロイした API のイメージで実行）~~ |
+| Azure | `AzureDiagnostics` テーブルの保存期間（`deferredTableRetention`）が段階 3 の deploy で設定できるか。テーブルは VPN ゲートウェイの最初のログで Azure が作るため、段階 1・2 では設定しない（2026-11-22、cdktn。VPN なしの deploy が `ResourceNotFound` で失敗したため）。段階 1 の `cdktn diff` でテーブルの設定が `ContainerApp*` の 2 つだけ、段階 3 で `AzureDiagnostics` が追加されて deploy が通り、`az monitor log-analytics workspace table show -g rg_multicloud --workspace-name log-workspace-prod -n AzureDiagnostics --query retentionInDays` が 30 | ✅ ~~確認済み（2026-11-22、段階 1 は `ContainerApp*` の 2 つだけ、段階 3 で追加され `retentionInDays` 30）~~ |
 | 3 クラウド | 新しい証明書（Google のロードバランサー、Azure の Application Gateway の PFX）が受け付けられるか | ✅ ~~確認済み（2026-10-25、HTTPS で応答）~~ |
 | Azure | Cloud SQL・Aurora から Azure の DB へ、プライベート DNS の名前で接続できるか（ピアリングされた DNS ドメイン） | ✅ ~~確認済み（2026-10-25）~~ |
 
@@ -411,9 +414,24 @@ aws logs filter-log-events --region ap-northeast-1 --log-group-name /aws/ecs/api
 | 改善 | `cluster-setup.sh --status`（状態だけを表示）、`buildspec.yml`（待ち 20 分、ロールバックで失敗に） |
 | 終了時 | DB の設定を単体に戻した（Aurora 1 台、Cloud SQL `ZONAL`、Azure `B_Standard_B1ms`）。ユーザーが destroy |
 
+### 8.5.8 2026-11-22 の構築と残りの確認
+
+| 項目 | 内容 |
+|---|---|
+| 構成 | dev、3 クラウド、`topology: cluster`、`vpnMode: singleTunnel`、プライベート DNS なし（Azure の DB は `10.2.32.4`）。ロードバランサーは AWS・Google が HTTP、Azure が HTTPS。公開 DNS あり |
+| 事前の修正（cdktn、`0758215`） | 前の deploy（VPN なし・Azure だけ）が `ResourceNotFound: The specified table: 'AzureDiagnostics' was not found` で失敗。`AzureDiagnostics` は最初のログで Azure が作るテーブルで、作られる前は保存期間を設定できない（Microsoft のドキュメント）。保存期間を `deferredTableRetention` に移し、Azure の VPN ゲートウェイを `logs` 付きで作り段階 3 のときだけ設定するように変更 |
+| deploy | 段階 1（315 追加）・2・3 とも成功。段階 1 のテーブルの設定は `ContainerApp*` の 2 つだけ、段階 3 で `AzureDiagnostics` の保存期間を追加（`retentionInDays` 30 を `az` で確認） |
+| DB・API | `cluster-setup.sh aws`（`cluster-setup-hosts` の 1 行を前に付けて）、3 クラウドのパイプラインを手で実行（`03e3791`）。Google の Cloud Shell は先に `gcloud config set project` が必要だった |
+| AWS の ALB | 段階 2・3 の deploy の後も `/readyz` が 200（`f489037` の `ignore_changes` の効果を確認） |
+| 削除ジョブ | Google: `gcloud scheduler jobs run` で Scheduler のサービスアカウントから起動、`COMPLETE 1/1`。Azure: `az containerapp job start` で `Succeeded`、ログは `ContainerAppConsoleLogs`（`JobName` 列）に入る。AWS: スケジュールを一時的に 5 分ごとにして実行を確認、`cron(0 3 * * ? *)` に戻した。3 クラウドとも `Deleted 0 journal rows older than 30 days on aws (epoch 1)` |
+| DB の権限（API-04） | 3 クラウドとも管理者（`root`・`root`・`azuredbadmin`）は `superuser = f`、`pg_signal_backend` のメンバー（`pg_terminate_backend` を使える）、`pg_replication_origin_status` を読める。スロットは各ノード 2 つ、すべて active |
+| 書き込みと読み出し（E） | 3 クラウドの各 API から書き込み（プライマリ aws 以外からも成功）、3 クラウドから読み出してすぐに一致。Google・Azure の `mc_sub_aws_to_*` の `remote_lsn` が `0/0` から `0/4582D08` に進み、2 ノードが同じ位置。時間（端末からの `time_total`）: healthz 87〜115ms、書き込み 94〜145ms、読み出し 54〜127ms。接続・TLS とばらつきが大きいため測り直した: `time_starttransfer − time_pretransfer` の 10 回の中央値で aws healthz 16・write 35・read 19ms、google 26・57・27ms、azure 16・54・16ms（write − healthz は 19・31・38ms）。AWS の VM から Google・Azure の DB への `SELECT 1` は 5.8ms・5.2ms |
+| アラート（F） | AWS: ログに 1 行書いて `api-errors`・`journal-prune-failed` が `ALARM`、SNS のメール。Google: 削除ジョブを不正な値で実行し `journal-prune-failed` のメール（severity なし）。Azure: `api-errors` が鳴った（原因は仮のイメージの nginx のログ、下の (3)）。`journal-prune-failed` の試験は `az containerapp job start` の上書きの仕様で失敗（§8.2 の手順の注記）、仕組みは `api-errors` と同じで条件の書き方も確認済みのため確認済みとした |
+| 気づいたこと | (1) `pg_replication_origin_status` の `remote_lsn` が 3 ノードとも `0/0`（データの書き込み前）。書き込みの後に進むことを確認する（強制切り替えはこの値で比べる）。(2) アプリの `docs/getting-started.md` 6 章の最後に「`scripts/journal-prune.sh` を定期実行するよう設定」とあったが、削除はマネージドのジョブ（API-07）に移っていた → getting-started・README・architecture（英語版と日本語版）を修正（2026-11-22）。(3) Azure の Application Gateway に、構築の直後からスキャナーのアクセス（`/.env`、`/.git/config`、`/autodiscover/…`）。仮のイメージ（nginx）の `open() … failed` が `api-errors` に一致した。アラートは 7:58 UTC に鳴ったが最後の該当ログは 07:25 で、時刻のずれの理由は未確認。API-23・API-25 の検討材料 |
+
 ### 8.6 ユーザーの回答待ち
 
 | # | 内容 |
 |---|---|
-| 1 | アプリの PR #7 の `dev` へのマージ |
+| ~~1~~ | ~~アプリの PR #7 の `dev` へのマージ~~ マージ済み（`03e3791`） |
 | 2 | 次の dev の構築の時期と範囲（§8.2 の「次に dev で確認」。削除ジョブの確認には一晩残す必要がある）。課金を伴う |

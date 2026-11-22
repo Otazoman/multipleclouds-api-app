@@ -297,8 +297,9 @@ curl https://<endpoint>/readyz    # データベースが応答し、マイグ�
 そのノードにマイグレーションが足りません（API のログに名前が出ます）。`DB_*` と、そのノードで
 `scripts/migrate.sh` と `scripts/api-role-setup.sh` を実行したかを確認してください。
 
-初回デプロイの後、スクリプト用ホストで `scripts/journal-prune.sh` を定期実行（例：毎日）するよう
-設定してください。[operations.ja.md](operations.ja.md#変更履歴ジャーナル) を参照してください。
+変更履歴（ジャーナル）の古い行は、インフラのリポジトリが作るジョブ（`apiContainerConfig.journalPrune`、
+構築の段階 3）が毎日削除します。スクリプト用ホストで定期実行する必要はありません。実行結果の確認と
+手動での削除は [operations.ja.md](operations.ja.md#変更履歴ジャーナル) を参照してください。
 
 ## 次に読むもの
 

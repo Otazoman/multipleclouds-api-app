@@ -256,7 +256,7 @@ mutation {
 ```
 
 キーは、変更履歴（ジャーナル）がその書き込みを保持している間だけ有効です
-（`scripts/journal-prune.sh`、既定 30 日）。
+（毎日の削除ジョブ。既定 30 日。手動では `scripts/journal-prune.sh`）。
 
 ## エンドポイント
 
