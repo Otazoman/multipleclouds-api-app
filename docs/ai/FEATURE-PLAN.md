@@ -20,7 +20,7 @@
 |---|---|
 | dev の環境 | 2026-11-23 に destroy を実行（終了と state が空かを再開時に確認。Google の PSA の接続と Cloud Run のサブネットで止まることがある: §6） |
 | アプリのリポジトリ | `dev` は `03e3791`（PR #7 まで）。**PR #9 が未マージ**（`docs/journal-prune-and-feature-plan`）: `cluster-setup.sh --status`・`--force`、`buildspec.yml`（ECS の待ち 20 分とロールバックの検出）、手順書、本ファイル |
-| cdktn のリポジトリ | `main` の `42c5b7c` まで push 済み。**手元の未コミット**: `config/commonsettings.ts`（構築の構成）、`config/google/cloudsql/cloudsql.ts`（Cloud SQL の名前） |
+| cdktn のリポジトリ | `main` の `1fc78e7` まで push 済み。**手元の未コミット**: `config/commonsettings.ts`（構築の構成）、`config/google/cloudsql/cloudsql.ts`（Cloud SQL の名前） |
 | cdktn の dev の設定 | 3 クラウド、`topology: cluster`、VPN `singleTunnel`、`hostZones: false`（プライベート DNS なし）、`dns: true`、ロードバランサーは 3 クラウドとも HTTPS、`alerting` 有効。API の最小台数は ECS 1・Cloud Run 1（最大 2）・Container Apps 1（最大 10）。構築の段階は 1。バージョン: cdktn 0.25.1、google プロバイダー 8.12、Terraform 1.17.2 |
 
 ## 2. 次回やること
@@ -44,6 +44,7 @@
 | `buildspec.yml` | ECS のデプロイを 20 分まで待ち、ロールバックで失敗になる | PR #9 |
 | パスワードの変更のリハーサル | `app_api` と `app_repl` を変え、API を作り直してつながる | API-09 |
 | 同時の書き込みの実測 | 毎秒 700〜800 件という上限の想定（§4 の接続数） | API-05、API-06 |
+| destroy で PSA の接続が止まらないか | cdktn `1fc78e7` の `deletion_policy = "REMOVE_PEERING"` で、手で消さずに destroy が通るか | — |
 
 構築の前に: Cloud SQL の名前を新しい日時に変える（§5）。
 
@@ -67,7 +68,6 @@
 | API-11 | P3 | 強制切り替えで受信が少なかったノードを、初期化ではなく変更履歴から修復 | 今は `journal-diff.sh` で一覧にするだけ |
 | API-12 | P3 | 名前付きクエリの SQL の検証（起動時か `npm run generate` 時） | 今は実行するまで分からない |
 | INFRA | P3 | cdktn: deploy のたびに出る差分の整理、Google のアラートの部品の型から使えない比較を外す | 未着手 |
-| AZ-AI | P3 | Application Insights を作ると Azure が自動で作るアクション グループ `Application Insights Smart Detection` が、destroy の後に残る（cdktn の管理外） | 2026-11-23 に判明。再発を防ぐ方法を調査中（azurerm の `features.application_insights.disable_generated_rule` で止まるか、`before-destroy` で消すか） |
 | CERT | — | Azure の Let's Encrypt の自動更新（期限の 30 日前） | 環境を 60 日以上残したときだけ関係する（初回は発行から約 60 日後）。未確認 |
 
 **完了**: API-01〜04、06（プールの縮小）〜08、13〜19、21、22、24、29。
@@ -135,7 +135,7 @@
 - ALB の DNS 名は構築のたびに変わる。確認には `cdktn output` の `api-health-urls` を使う。Cloud SQL の IP も構築ごとに変わる（`.3`・`.5` など）。Azure の DB はふだん `10.2.32.4`、HA のフェイルオーバーで `.5` に変わる（プライベート DNS なしでは記録し直す）。
 - 段階 3 の deploy は API のビルドの後に行う。先に行うと、仮のイメージが `/readyz` に落ちて AWS のデプロイが待ちきれず、ビルドが失敗扱いになる。
 - 最初の deploy で CodeBuild の `OAuthProviderException` が出ることがある（再実行で通る）。
-- Google の destroy は、PSA の接続（Cloud SQL を消した後も使用中とされる）と Cloud Run のサブネット（内部 IP の解放に 1〜2 時間）で止まる。PSA の接続と VPC ピアリングを手で消し、時間をおいて再実行する。実物を手で消したリソースが state に残ったら `terraform state rm`。
+- Google の destroy は、PSA の接続（Cloud SQL を消した後も使用中とされる）と Cloud Run のサブネット（内部 IP の解放に 1〜2 時間）で止まる。PSA は 2026-11-23 から `REMOVE_PEERING` で自動でピアリングを消す（次の destroy で確認）。止まったら cdktn の operations の「既知の問題」の `gcloud` のコマンドで接続とピアリングだけを手で消す。サブネットは時間をおいて再実行するしかない。実物を手で消したリソースが state に残ったら `terraform state rm`。
 - Azure の DB のパラメータは `npm run before-destroy` が state から外す（論理レプリケーションのスロットがあると `wal_level` を戻せず destroy が止まるため）。
 - 段階 3 でしか作らないリソースのプロバイダー（AWS の us-east-1）は、段階 1 でも定義しておく必要がある（destroy は段階 1 で合成するため）。
 
@@ -157,7 +157,7 @@
 
 **監視**
 
-- Application Insights を作ると、Azure がアクション グループ `Application Insights Smart Detection`（グローバル）を自動で作り、destroy で消えない。消すには `az monitor action-group delete -g rg_multicloud -n "Application Insights Smart Detection"`。自動で作られたリソースを探すときは、種類の名前で絞らずに `az resource list -g rg_multicloud` を見る。
+- Application Insights を作ると、Azure がアクション グループ `Application Insights Smart Detection`（グローバル）を自動で作り、destroy で消えない。azurerm では作成を止められない（#16124、#18026）ので、そのままにする（害はなく、destroy も止まらず、次の構築で使い回される見込み。2026-11-23 に決定。cdktn の operations の「既知の問題」に記載）。消すには `az monitor action-group delete -g rg_multicloud -n "Application Insights Smart Detection"`。自動で作られたリソースを探すときは、種類の名前で絞らずに `az resource list -g rg_multicloud` を見る。
 - Azure の `az containerapp job start --image --env-vars` は、その実行のコンテナの定義をまるごと置き換える（コマンドと他の環境変数が消える）。
 - Log Analytics の `has` は空白を含む文字列でも一致する。ログが届くまで数分かかる。
 - Azure の可用性テストの地点は、Microsoft の推奨が 5 地点以上・`locationCount - 2` 地点の失敗で通知（cdktn の `uptimeCheck.locationCount` で変えられる。dev は 3 地点・2 地点）。
