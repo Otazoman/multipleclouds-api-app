@@ -367,20 +367,22 @@ cloud's API may still reach it), then:
 scripts/switchover.sh --force <target>
 ```
 
-Run it from a VM of a cloud that is still up. `scripts/cluster-setup.sh` has
-no `--force`, so give the script the node settings by hand: copy
-`replication/nodes.env.sample` to `replication/nodes.env`, set `NODE_<N>_HOST`
-(without the private DNS, the addresses of the deploy output
-`cluster-setup-hosts`) and `NODE_<N>_ADMIN_USER` of every node, and export the
-admin passwords without writing them to a file or the history:
+On the clouds, run it from a VM of a cloud that is still up, through
+`scripts/cluster-setup.sh` (without the private DNS, put the deploy output
+`cluster-setup-hosts` in front, as for the setup):
 
 ```bash
-for n in AWS GOOGLE AZURE; do read -rsp "admin password of $n: " p; echo; export NODE_${n}_ADMIN_PASSWORD="$p"; done; unset p
-scripts/replication-status.sh   # the reachable nodes answer
-scripts/switchover.sh --force <target>
+scripts/cluster-setup.sh <this VM's cloud> --force <target>
 ```
 
-Unset the passwords when done.
+It skips the unreachable nodes (the target must be reachable), asks for the
+admin passwords of the reachable nodes only, runs `switchover.sh --force` and
+shows the state of the reachable nodes. `--allow-behind` is passed on.
+Elsewhere (no `cluster-setup.sh` defaults), set `replication/nodes.env`
+(from `replication/nodes.env.sample`), export the admin passwords without
+writing them to a file or the history
+(`read -rsp "admin password: " p; export NODE_<N>_ADMIN_PASSWORD="$p"`) and
+run `scripts/switchover.sh --force <target>`.
 
 - The script shows how much each reachable node received from the old
   primary. The target must be the node that received the most; otherwise

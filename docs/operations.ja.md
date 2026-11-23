@@ -321,18 +321,18 @@ scripts/switchover.sh <target>
 scripts/switchover.sh --force <target>
 ```
 
-止まっていないクラウドの VM で実行します。`scripts/cluster-setup.sh` には `--force` がないため、ノードの設定を手で
-渡します。`replication/nodes.env.sample` を `replication/nodes.env` にコピーし、各ノードの `NODE_<N>_HOST`（プライベート
-DNS がなければ、deploy の出力 `cluster-setup-hosts` のアドレス）と `NODE_<N>_ADMIN_USER` を設定し、管理者のパスワードを
-ファイルにも履歴にも残さずに export します：
+クラウドでは、止まっていないクラウドの VM で、`scripts/cluster-setup.sh` から実行します（プライベート DNS が
+なければ、セットアップと同じく deploy の出力 `cluster-setup-hosts` を前に付けます）：
 
 ```bash
-for n in AWS GOOGLE AZURE; do read -rsp "admin password of $n: " p; echo; export NODE_${n}_ADMIN_PASSWORD="$p"; done; unset p
-scripts/replication-status.sh   # 接続できるノードが応答する
-scripts/switchover.sh --force <target>
+scripts/cluster-setup.sh <この VM のクラウド> --force <target>
 ```
 
-終わったらパスワードを unset します。
+接続できないノードは飛ばし（切り替え先には接続できる必要があります）、接続できるノードの管理者のパスワードだけを
+聞き、`switchover.sh --force` を実行して、接続できるノードの状態を表示します。`--allow-behind` はそのまま渡します。
+それ以外の環境（`cluster-setup.sh` の既定値が合わない場合）では、`replication/nodes.env`（`replication/nodes.env.sample`
+から）を設定し、管理者のパスワードをファイルにも履歴にも残さずに export して
+（`read -rsp "admin password: " p; export NODE_<N>_ADMIN_PASSWORD="$p"`）、`scripts/switchover.sh --force <target>` を実行します。
 
 - スクリプトは、接続できる各ノードが旧プライマリから受け取った量を表示します。切り替え先は最も多く
   受け取ったノードでなければならず、そうでなければ停止します（他のノードだけが確認した書き込みが
