@@ -367,6 +367,21 @@ cloud's API may still reach it), then:
 scripts/switchover.sh --force <target>
 ```
 
+Run it from a VM of a cloud that is still up. `scripts/cluster-setup.sh` has
+no `--force`, so give the script the node settings by hand: copy
+`replication/nodes.env.sample` to `replication/nodes.env`, set `NODE_<N>_HOST`
+(without the private DNS, the addresses of the deploy output
+`cluster-setup-hosts`) and `NODE_<N>_ADMIN_USER` of every node, and export the
+admin passwords without writing them to a file or the history:
+
+```bash
+for n in AWS GOOGLE AZURE; do read -rsp "admin password of $n: " p; echo; export NODE_${n}_ADMIN_PASSWORD="$p"; done; unset p
+scripts/replication-status.sh   # the reachable nodes answer
+scripts/switchover.sh --force <target>
+```
+
+Unset the passwords when done.
+
 - The script shows how much each reachable node received from the old
   primary. The target must be the node that received the most; otherwise
   the script stops (writes confirmed only by another node would be missing).
@@ -385,11 +400,15 @@ scripts/switchover.sh --force <target>
 The old primary must not rejoin as it is: it may hold writes that were never
 confirmed (clients got `COMMIT_UNCONFIRMED` or no answer). When it is back:
 
-1. List its writes that never reached the others, with their arguments and
-   results, and keep the output:
+1. **Stop writes on all nodes** (stop the API services) until it has been
+   added back: the old primary's subscriptions still receive the new
+   primary's writes, so a write between the two queries of
+   `journal-diff.sh` is listed as missing although it is not. Then list its
+   writes that never reached the others, with their arguments and results,
+   and keep the output. `SINCE` is a timestamp with its date and time zone:
 
    ```bash
-   SINCE='<a time before the outage>' scripts/journal-diff.sh <old primary> <current primary>
+   SINCE='2026-11-23 15:20+09' scripts/journal-diff.sh <old primary> <current primary>
    ```
 
    Clients got `COMMIT_UNCONFIRMED` (or no answer) for these writes. Those
@@ -397,7 +416,13 @@ confirmed (clients got `COMMIT_UNCONFIRMED` or no answer). When it is back:
    the new primary; the others can be reviewed and sent again through the
    API if needed.
 2. Remove it ("Removing a node") and add it back ("Adding a removed node
-   back"). This resets its data.
+   back"). This resets its data. In a cluster on the clouds, steps 2 to 4 of
+   "Adding a node" can be one command,
+   `SEED_FROM=<current primary> scripts/cluster-setup.sh <cloud>` (only the
+   reset node gets `copy_data = true`; the warning that the copy "might copy
+   data that had a different origin" is expected). It keeps the primary and
+   does not send the state to the reset node, so run step 5,
+   `scripts/switchover.sh <current primary>`, afterwards in any case.
 
 ### Nodes that were unreachable during a switchover
 
@@ -493,7 +518,18 @@ There is no script for this. Do not remove the primary: switch over first.
    -- wal_sender_timeout (1 minute); end that connection first.
    SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
     WHERE slot_name = 'mc_sub_<this>_to_<removed>' AND active;
-   SELECT pg_drop_replication_slot('mc_sub_<this>_to_<removed>');
+   ```
+
+   Then drop the slot **as the replication role**: on Cloud SQL and Azure the
+   admin user may not use replication slots (`must be superuser or
+   replication role to use replication slots`); on Aurora either works.
+   `REPL_PASSWORD` is the replication password (`db-repl-password` in the
+   clouds' secret stores, see "Passwords"); read it without echoing it:
+
+   ```bash
+   read -rsp "replication password: " REPL_PASSWORD; echo
+   PGPASSWORD="$REPL_PASSWORD" psql -h <this host> -U app_repl -d appdb \
+     -c "SELECT pg_drop_replication_slot('mc_sub_<this>_to_<removed>')"
    ```
 
 3. Remove the node from `NODES`.
@@ -513,13 +549,20 @@ subscriptions. Reset it, then add it as a new node.
      FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
    SELECT format('DROP SUBSCRIPTION %I', subname)
      FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
-   SELECT pg_drop_replication_slot(slot_name)
-     FROM pg_replication_slots WHERE slot_name LIKE 'mc\_sub\_%';
    -- The publication does not publish TRUNCATE; dropping it as well makes
    -- sure nothing from this node reaches another node (replication-setup.sh
    -- recreates it).
    DROP PUBLICATION IF EXISTS mc_pub;
    TRUNCATE app.items, app.write_journal;   -- every table in schema "app"
+   ```
+
+   Then drop its slots for the other nodes as the replication role (as in
+   "Removing a node"; the subscriptions that used them are gone, so they are
+   not active):
+
+   ```bash
+   PGPASSWORD="$REPL_PASSWORD" psql -h <removed host> -U app_repl -d appdb -c \
+     "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name LIKE 'mc\_sub\_%' AND NOT active"
    ```
 
    Rows that were written on this node but never reached the others are
