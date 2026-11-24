@@ -1,6 +1,7 @@
 # Local active/active environment: three PostgreSQL nodes standing in for
 # the clouds and one API per node. The database appdb is created by
-# scripts/database-create.sh, as on the clouds. See docs/getting-started.md.
+# scripts/database-create.sh, as on the clouds. See README.md, "Local testing
+# (three nodes)" (README.ja.md: 「ローカルテスト（3 ノード）」).
 # The passwords are for these throwaway local containers only.
 
 x-postgres: &postgres

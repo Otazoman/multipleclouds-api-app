@@ -321,6 +321,19 @@ scripts/switchover.sh <target>
 scripts/switchover.sh --force <target>
 ```
 
+クラウドでは、止まっていないクラウドの VM で、`scripts/cluster-setup.sh` から実行します（プライベート DNS が
+なければ、セットアップと同じく deploy の出力 `cluster-setup-hosts` を前に付けます）：
+
+```bash
+scripts/cluster-setup.sh <この VM のクラウド> --force <target>
+```
+
+接続できないノードは飛ばし（切り替え先には接続できる必要があります）、接続できるノードの管理者のパスワードだけを
+聞き、`switchover.sh --force` を実行して、接続できるノードの状態を表示します。`--allow-behind` はそのまま渡します。
+それ以外の環境（`cluster-setup.sh` の既定値が合わない場合）では、`replication/nodes.env`（`replication/nodes.env.sample`
+から）を設定し、管理者のパスワードをファイルにも履歴にも残さずに export して
+（`read -rsp "admin password: " p; export NODE_<N>_ADMIN_PASSWORD="$p"`）、`scripts/switchover.sh --force <target>` を実行します。
+
 - スクリプトは、接続できる各ノードが旧プライマリから受け取った量を表示します。切り替え先は最も多く
   受け取ったノードでなければならず、そうでなければ停止します（他のノードだけが確認した書き込みが
   欠けるため）。`--allow-behind` でこのチェックを無視できます。
@@ -336,16 +349,23 @@ scripts/switchover.sh --force <target>
 旧プライマリをそのまま戻してはいけません。確認されなかった書き込み（クライアントには
 `COMMIT_UNCONFIRMED` が返ったか、応答がなかったもの）を持っている可能性があります。復旧したら：
 
-1. 他のノードに届かなかった書き込みを、引数と結果つきで一覧にし、出力を保存します：
+1. 戻し終わるまで、**全ノードで書き込みを止めます**（API サービスを停止）。旧プライマリのサブスクリプションは
+   新しいプライマリの書き込みを受け取り続けるため、`journal-diff.sh` の 2 つの問い合わせの間に書き込まれた行が、
+   実際には届いているのに「欠けている」と表示されます。そのうえで、他のノードに届かなかった書き込みを、引数と
+   結果つきで一覧にし、出力を保存します。`SINCE` は日付とタイムゾーンつきの日時です：
 
    ```bash
-   SINCE='<障害より前の時刻>' scripts/journal-diff.sh <旧プライマリ> <現在のプライマリ>
+   SINCE='2026-11-23 15:20+09' scripts/journal-diff.sh <旧プライマリ> <現在のプライマリ>
    ```
 
    これらの書き込みについて、クライアントには `COMMIT_UNCONFIRMED`（または応答なし）が返っています。
    同じ冪等キーで再送したものは、新しいプライマリで書き込み済みです。それ以外は内容を確認し、
    必要なら API から再度送ります。
-2. 外して（「ノードの削除」）、戻します（「外したノードを戻す」）。これでデータが初期化されます。
+2. 外して（「ノードの削除」）、戻します（「外したノードを戻す」）。これでデータが初期化されます。クラウドの
+   クラスタでは、「ノードの追加」の手順 2〜4 を `SEED_FROM=<現在のプライマリ> scripts/cluster-setup.sh <cloud>` の
+   1 コマンドにできます（`copy_data = true` になるのは初期化したノードだけ。「別の origin のデータをコピーするかも
+   しれない」という WARNING は想定内）。プライマリは変わらないので、初期化したノードに状態を配りません。いずれの
+   場合も、その後で手順 5 の `scripts/switchover.sh <現在のプライマリ>` を実行します。
 
 ### 切り替え中に接続できなかったノード
 
@@ -431,7 +451,17 @@ DAYS=30 scripts/journal-prune.sh
    -- にしていることがあるので、先にその接続を終了する。
    SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
     WHERE slot_name = 'mc_sub_<this>_to_<removed>' AND active;
-   SELECT pg_drop_replication_slot('mc_sub_<this>_to_<removed>');
+   ```
+
+   その後、スロットを**レプリケーションのロールで**削除します。Cloud SQL と Azure の管理者ユーザーはレプリケーション
+   スロットを使えません（`must be superuser or replication role to use replication slots`）。Aurora はどちらでも削除できます。
+   `REPL_PASSWORD` はレプリケーションのパスワード（各クラウドのシークレットストアの `db-repl-password`、「パスワード」を参照）
+   で、画面に表示せずに読み込みます：
+
+   ```bash
+   read -rsp "replication password: " REPL_PASSWORD; echo
+   PGPASSWORD="$REPL_PASSWORD" psql -h <このノードのホスト> -U app_repl -d appdb \
+     -c "SELECT pg_drop_replication_slot('mc_sub_<this>_to_<removed>')"
    ```
 
 3. `NODES` からノードを外します。
@@ -449,12 +479,18 @@ DAYS=30 scripts/journal-prune.sh
      FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
    SELECT format('DROP SUBSCRIPTION %I', subname)
      FROM pg_subscription WHERE subname LIKE 'mc\_sub\_%' \gexec
-   SELECT pg_drop_replication_slot(slot_name)
-     FROM pg_replication_slots WHERE slot_name LIKE 'mc\_sub\_%';
    -- パブリケーションは TRUNCATE を公開しないが、パブリケーションも削除して
    -- このノードから他ノードに何も届かないようにする（replication-setup.sh が作り直す）
    DROP PUBLICATION IF EXISTS mc_pub;
    TRUNCATE app.items, app.write_journal;   -- スキーマ "app" のすべてのテーブル
+   ```
+
+   その後、他ノード向けのスロットを、レプリケーションのロールで削除します（「ノードの削除」と同じ。使っていた
+   サブスクリプションは削除済みなので、使用中ではありません）：
+
+   ```bash
+   PGPASSWORD="$REPL_PASSWORD" psql -h <外したノードのホスト> -U app_repl -d appdb -c \
+     "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name LIKE 'mc\_sub\_%' AND NOT active"
    ```
 
    このノードで書き込まれ、他ノードに届いていなかった行はこの手順で失われます。必要なら先にエクスポートしてください。

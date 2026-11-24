@@ -157,7 +157,10 @@ What it does:
 
 Check the status it prints at the end: on every node the same primary and
 epoch, every subscription enabled, every slot active, no errors. Safe to run
-again (e.g. a release's migrations). The names default to the
+again (e.g. a release's migrations). `scripts/cluster-setup.sh aws --status`
+only shows that status (e.g. after a database failover): it asks for the
+admin passwords and changes nothing. `--force <node>` is the forced
+switchover when the primary is down ([operations.md](operations.md#forced-switchover)). The names default to the
 infrastructure's dev environment; override them in the environment
 (`NODES`, `NODE_<NODE>_HOST`, `NODE_<NODE>_ADMIN_USER`,
 `NODE_<NODE>_REPL_HOST`, and the secret names as for `secrets-set.sh`).
@@ -347,8 +350,10 @@ reach or log in to its database, or that a migration is missing there (the
 API log names it): check `DB_*` and that `scripts/migrate.sh` and
 `scripts/api-role-setup.sh` have run on that node.
 
-After the first deployment, schedule `scripts/journal-prune.sh` (e.g.
-daily) on the scripts host: see [operations.md](operations.md#write-journal).
+Old write-journal rows are deleted daily by the job the infrastructure
+repository creates (`apiContainerConfig.journalPrune`, build stage 3); there
+is no need to schedule `scripts/journal-prune.sh` on the scripts host. To
+check the runs or prune by hand, see [operations.md](operations.md#write-journal).
 
 ## Next steps
 

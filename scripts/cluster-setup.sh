@@ -14,11 +14,21 @@
 # written to a file or kept in the shell history. Nothing is written to
 # replication/nodes.env. Safe to run again (e.g. for a release's migrations).
 #
-# Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node>]
+# Usage: scripts/cluster-setup.sh aws|google|azure
+#          [--primary <node> | --status | --force <node> [--allow-behind]]
 #   --primary   first primary (default: the cloud of this VM). Once the
 #               cluster has a primary, it is kept unless --primary names
 #               another node, which then becomes the primary (a planned
 #               switchover, docs/operations.md).
+#   --status    only show the cluster's state (scripts/replication-status.sh),
+#               e.g. after a database failover; asks for the admin passwords
+#               only and changes nothing
+#   --force     forced switchover to <node> when the primary is down or cut
+#               off (scripts/switchover.sh --force, docs/operations.md):
+#               unreachable nodes are skipped (<node> must be reachable),
+#               asks for the admin passwords of the reachable nodes only and
+#               runs nothing else. --allow-behind is passed on to
+#               switchover.sh (only when it says so, after checking)
 #
 # The settings default to the dev environment of the infrastructure
 # repository; override them in the environment if needed:
@@ -37,7 +47,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  echo "Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node>]" >&2
+  echo "Usage: scripts/cluster-setup.sh aws|google|azure [--primary <node> | --status | --force <node> [--allow-behind]]" >&2
   exit 1
 }
 
@@ -48,6 +58,9 @@ case "$cloud" in
 esac
 shift
 primary=""
+status_only=""
+force_target=""
+allow_behind=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --primary)
@@ -55,9 +68,29 @@ while [[ $# -gt 0 ]]; do
       [[ -n "$primary" ]] || usage
       shift 2
       ;;
+    --status)
+      status_only=1
+      shift
+      ;;
+    --force)
+      force_target="${2:-}"
+      [[ -n "$force_target" ]] || usage
+      shift 2
+      ;;
+    --allow-behind)
+      allow_behind=1
+      shift
+      ;;
     *) usage ;;
   esac
 done
+# One mode at a time; --allow-behind only with --force
+modes=0
+for mode in "$primary" "$status_only" "$force_target"; do
+  [[ -z "$mode" ]] || modes=$((modes + 1))
+done
+(( modes <= 1 )) || usage
+[[ -z "$allow_behind" || -n "$force_target" ]] || usage
 
 NODES="${NODES:-aws google azure}"
 read -r -a node_list <<< "$NODES"
@@ -67,6 +100,10 @@ if [[ " $NODES " != *" $cloud "* ]]; then
 fi
 if [[ -n "$primary" && " $NODES " != *" $primary "* ]]; then
   echo "--primary $primary is not in NODES ($NODES)" >&2
+  exit 1
+fi
+if [[ -n "$force_target" && " $NODES " != *" $force_target "* ]]; then
+  echo "--force $force_target is not in NODES ($NODES)" >&2
   exit 1
 fi
 
@@ -120,16 +157,28 @@ for node in "${node_list[@]}"; do
     unreachable+=" $node"
   fi
 done
-if [[ -n "$unreachable" ]]; then
+if [[ -n "$force_target" ]]; then
+  # A forced switchover expects the old primary (or more) to be down
+  if [[ " $unreachable " == *" $force_target "* ]]; then
+    echo "The target $force_target is not reachable: choose a reachable node" >&2
+    exit 1
+  fi
+elif [[ -n "$unreachable" ]]; then
   echo "Not reachable:$unreachable. Check the VPN, the private DNS (getent hosts <name>) and the firewall / security group / NSG rules for port 5432" >&2
   exit 1
 fi
+reachable_nodes=()
+for node in "${node_list[@]}"; do
+  [[ " $unreachable " == *" $node "* ]] || reachable_nodes+=("$node")
+done
 
 # 2. API and replication passwords from this cloud's secret store
 need_store=""
 for node in "${node_list[@]}"; do
   [[ -n "$(node_var "$node" API_PASSWORD)" && -n "$(node_var "$node" REPL_PASSWORD)" ]] || need_store=1
 done
+# --status and --force use the databases as their admins only
+[[ -z "$status_only" && -z "$force_target" ]] || need_store=""
 if [[ -n "$need_store" ]]; then
   echo "== Reading the passwords from the $cloud secret store"
   AWS_REGION="${AWS_REGION:-ap-northeast-1}"
@@ -185,9 +234,10 @@ if [[ -n "$need_store" ]]; then
   echo "   ok"
 fi
 
-# 3. Database admin passwords (Enter: the same as the previous node)
+# 3. Database admin passwords (Enter: the same as the previous node), of the
+#    reachable nodes (all of them unless --force)
 previous=""
-for node in "${node_list[@]}"; do
+for node in "${reachable_nodes[@]}"; do
   N="${node^^}"
   [[ -z "$(node_var "$node" ADMIN_PASSWORD)" ]] || continue
   prompt="Database admin password of $node ($(node_var "$node" ADMIN_USER))"
@@ -203,6 +253,38 @@ for node in "${node_list[@]}"; do
   previous="$value"
 done
 unset value previous
+
+# --status: show the state and stop
+if [[ -n "$status_only" ]]; then
+  echo
+  echo "== scripts/replication-status.sh"
+  "$SCRIPT_DIR/replication-status.sh"
+  exit 0
+fi
+
+# --force: forced switchover only
+if [[ -n "$force_target" ]]; then
+  echo
+  echo "== Forced switchover to $force_target"
+  echo "   reachable:${reachable_nodes[*]/#/ }"
+  echo "   not reachable:${unreachable:- (none)}"
+  [[ -z "$unreachable" ]] || echo "   (their admin passwords are not asked: switchover.sh lists them as unreachable, \"...ADMIN_PASSWORD is required\")"
+  echo "   Use it only when the primary is down or cut off (docs/operations.md, \"Forced switchover\");"
+  echo "   otherwise run --primary $force_target (a planned switchover)."
+  read -r -p "Switch over by force to $force_target? [y/N] " answer
+  [[ "$answer" == [yY]* ]] || exit 1
+  echo
+  echo "== scripts/switchover.sh --force${allow_behind:+ --allow-behind} $force_target"
+  "$SCRIPT_DIR/switchover.sh" --force ${allow_behind:+--allow-behind} "$force_target"
+  echo
+  echo "== scripts/replication-status.sh (reachable nodes)"
+  NODES="${reachable_nodes[*]}" "$SCRIPT_DIR/replication-status.sh"
+  echo
+  echo "Done: $force_target is the primary. The old primary must not rejoin as it is:"
+  echo "follow docs/operations.md, \"After a forced switchover\"."
+  echo "Sign out of the CLI on a shared VM."
+  exit 0
+fi
 
 # 4. Confirm
 echo

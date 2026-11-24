@@ -140,6 +140,8 @@ scripts/cluster-setup.sh aws            # この VM のクラウド：aws / goog
 
 最後に表示される状態で、すべてのノードのプライマリと世代番号が同じ、すべてのサブスクリプションが有効、すべての
 スロットが active、エラー件数が `0` であることを確認します。再実行して問題ありません（リリースのマイグレーションなど）。
+`scripts/cluster-setup.sh aws --status` は、その状態だけを表示します（DB のフェイルオーバーの後など）。管理者のパスワードだけを聞き、何も変更しません。
+`--force <node>` は、プライマリが止まったときの強制切り替えです（[operations.ja.md](operations.ja.md#強制切り替え)）。
 名前の既定値はインフラの dev 環境のものです。異なる場合は環境変数で指定します（`NODES`、`NODE_<NODE>_HOST`、
 `NODE_<NODE>_ADMIN_USER`、`NODE_<NODE>_REPL_HOST`、シークレットの名前は `secrets-set.sh` と同じ）。
 
@@ -296,8 +298,9 @@ curl https://<endpoint>/readyz    # データベースが応答し、マイグ�
 そのノードにマイグレーションが足りません（API のログに名前が出ます）。`DB_*` と、そのノードで
 `scripts/migrate.sh` と `scripts/api-role-setup.sh` を実行したかを確認してください。
 
-初回デプロイの後、スクリプト用ホストで `scripts/journal-prune.sh` を定期実行（例：毎日）するよう
-設定してください。[operations.ja.md](operations.ja.md#変更履歴ジャーナル) を参照してください。
+変更履歴（ジャーナル）の古い行は、インフラのリポジトリが作るジョブ（`apiContainerConfig.journalPrune`、
+構築の段階 3）が毎日削除します。スクリプト用ホストで定期実行する必要はありません。実行結果の確認と
+手動での削除は [operations.ja.md](operations.ja.md#変更履歴ジャーナル) を参照してください。
 
 ## 次に読むもの
 
